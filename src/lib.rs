@@ -784,10 +784,8 @@ fn deep_merge(target: &mut TomlValue, source: TomlValue) {
 
 fn resolve_templates(value: &mut TomlValue, repo_name: &str) {
     match value {
-        TomlValue::String(s) => {
-            if s.contains("{repo_name}") {
-                *s = s.replace("{repo_name}", repo_name);
-            }
+        TomlValue::String(s) if s.contains("{repo_name}") => {
+            *s = s.replace("{repo_name}", repo_name);
         }
         TomlValue::Array(items) => {
             for item in items {
