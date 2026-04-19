@@ -255,6 +255,12 @@ fn global_git_dir_bare_repo_uses_existing_base_worktree() {
     assert!(main_wt.join(".wt/config.toml").exists());
 
     fs::write(main_wt.join("shared.txt"), "shared\n").unwrap();
+    run(
+        "git",
+        &["config", "user.email", "test@example.com"],
+        &main_wt,
+    );
+    run("git", &["config", "user.name", "Test User"], &main_wt);
     run("git", &["add", "shared.txt"], &main_wt);
     run("git", &["commit", "-m", "shared"], &main_wt);
     fs::write(
