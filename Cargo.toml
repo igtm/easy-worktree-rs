@@ -1,0 +1,19 @@
+[package]
+name = "easy-worktree"
+version = "0.2.13"
+edition = "2024"
+description = "Git worktree を簡単に管理するための CLI ツール"
+authors = ["igtm"]
+license = "MIT"
+repository = "https://github.com/igtm/easy-worktree-rs"
+keywords = ["git", "worktree", "cli", "tool"]
+
+[[bin]]
+name = "wt"
+path = "src/main.rs"
+
+[dependencies]
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+serde_json = "1"
+sha1 = "0.10"
+toml = "0.8"

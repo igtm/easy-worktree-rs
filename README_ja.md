@@ -1,0 +1,118 @@
+# easy-worktree-rs
+
+[`easy-worktree`](https://github.com/igtm/easy-worktree) の Rust 版です。
+
+[English README](./README.md)
+
+`easy-worktree-rs` は Git worktree を管理する `wt` コマンドを提供します。Python 版と同じコマンド体系を目指しており、現在のバージョンは `0.2.13` です。
+
+## インストール
+
+Linux または macOS で最新の GitHub Release をインストールします。
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/igtm/easy-worktree-rs/main/install.sh | sh
+```
+
+インストール先を指定する場合:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/igtm/easy-worktree-rs/main/install.sh | sh -s -- -b=$HOME/.local/bin
+```
+
+バージョンを指定する場合:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/igtm/easy-worktree-rs/main/install.sh | sh -s -- -v=v0.2.13
+```
+
+Cargo で GitHub からインストールする場合:
+
+```bash
+cargo install --git https://github.com/igtm/easy-worktree-rs.git --locked
+```
+
+ローカル checkout からインストールする場合:
+
+```bash
+cargo install --path . --locked
+```
+
+## 使い方
+
+バイナリ名は `wt` です。
+
+```bash
+wt clone [--bare] <repository_url> [dest_dir]
+wt init
+wt add <work_name> [<base_branch>] [--skip-setup|--no-setup] [--select [<command>...]]
+wt list [--pr] [--quiet|-q] [--days N] [--merged] [--closed] [--all]
+wt diff [<name>] [args...]
+wt config [--global|--local] [<key> [<value>]]
+wt rm <work_name> [-f|--force]
+wt clean [--days N] [--merged] [--closed] [--all] [--yes|-y]
+wt setup
+wt stash <work_name> [<base_branch>]
+wt pr add <number>
+wt select [<name>|-] [<command>...]
+wt current
+wt run <name> <command>...
+wt completion <bash|zsh>
+wt doctor
+```
+
+## 例
+
+既存リポジトリを初期化します。
+
+```bash
+cd my-repo
+wt init
+```
+
+worktree を作成します。
+
+```bash
+wt add feature-1
+```
+
+worktree を作成してすぐに選択します。
+
+```bash
+wt add feature-1 --select
+```
+
+worktree 一覧を表示します。
+
+```bash
+wt list
+wt list --quiet
+wt list --pr
+```
+
+worktree を削除します。
+
+```bash
+wt rm feature-1
+```
+
+## 開発
+
+```bash
+cargo build
+cargo test
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings -A clippy::collapsible-if
+```
+
+## リリース自動化
+
+GitHub Actions は pull request と `main` への push で CI を実行します。pull request の merge も GitHub 上では `main` への push になるため、release workflow が実行されます。
+
+release workflow は `Cargo.toml` の `version` を読み取り、`vX.Y.Z` の GitHub Release を作成または更新し、以下のクロスビルド成果物をアップロードします。
+
+- `wt_vX.Y.Z_x86_64-unknown-linux-gnu.tar.gz`
+- `wt_vX.Y.Z_aarch64-unknown-linux-gnu.tar.gz`
+- `wt_vX.Y.Z_x86_64-apple-darwin.tar.gz`
+- `wt_vX.Y.Z_aarch64-apple-darwin.tar.gz`
+- `wt_vX.Y.Z_x86_64-pc-windows-msvc.tar.gz`
