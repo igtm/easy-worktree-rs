@@ -1,7 +1,9 @@
 use std::fs;
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::process::{Command, Output, Stdio};
+use std::sync::mpsc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 fn wt_bin() -> &'static str {
     env!("CARGO_BIN_EXE_wt")
@@ -336,6 +338,132 @@ fn post_add_hook_output_is_routed_to_stderr() {
     assert!(!stdout.contains("HOOK-OUT"));
     assert!(stderr.contains("HOOK-OUT"));
     assert!(stderr.contains("HOOK-ERR"));
+}
+
+#[test]
+fn post_add_hook_output_is_streamed_before_hook_exits() {
+    let root = temp_dir("hook-stream");
+    let repo = root.join("repo");
+    let xdg = root.join("xdg");
+    init_repo(&repo);
+    run_wt(&["init"], &repo, &xdg);
+
+    let hook = repo.join(".wt/post-add");
+    fs::write(
+        &hook,
+        "#!/bin/sh\n\
+         echo HOOK-START\n\
+         while [ ! -f continue-hook ]; do sleep 0.05; done\n\
+         echo HOOK-DONE\n",
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let mut child = Command::new(wt_bin())
+        .args(["add", "stream-hook"])
+        .current_dir(&repo)
+        .env("LANG", "en")
+        .env("LC_ALL", "C")
+        .env("XDG_CONFIG_HOME", &xdg)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    let stderr = child.stderr.take().unwrap();
+    let mut reader = BufReader::new(stderr);
+    let mut seen = String::new();
+    loop {
+        let mut line = String::new();
+        let bytes = reader.read_line(&mut line).unwrap();
+        assert!(bytes > 0, "wt exited before streaming hook output\n{seen}");
+        seen.push_str(&line);
+        if line.contains("HOOK-START") {
+            break;
+        }
+    }
+
+    assert!(
+        seen.contains("Running post-add hook"),
+        "hook start message was not emitted before hook output\n{seen}"
+    );
+    assert!(
+        child.try_wait().unwrap().is_none(),
+        "hook output was only observed after the hook exited\n{seen}"
+    );
+
+    let wt_path = repo.join(".worktrees/stream-hook");
+    fs::write(wt_path.join("continue-hook"), "").unwrap();
+
+    let mut rest = String::new();
+    reader.read_to_string(&mut rest).unwrap();
+    seen.push_str(&rest);
+    let status = child.wait().unwrap();
+    assert!(status.success(), "wt add failed\n{seen}");
+    assert!(seen.contains("HOOK-DONE"));
+}
+
+#[test]
+fn post_add_hook_does_not_inherit_wt_stdin() {
+    let root = temp_dir("hook-stdin");
+    let repo = root.join("repo");
+    let xdg = root.join("xdg");
+    init_repo(&repo);
+    run_wt(&["init"], &repo, &xdg);
+
+    let hook = repo.join(".wt/post-add");
+    fs::write(
+        &hook,
+        "#!/bin/sh\n\
+         if read value; then\n\
+           echo UNEXPECTED-STDIN\n\
+         else\n\
+           echo STDIN-EOF\n\
+         fi\n",
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let mut child = Command::new(wt_bin())
+        .args(["add", "stdin-hook"])
+        .current_dir(&repo)
+        .env("LANG", "en")
+        .env("LC_ALL", "C")
+        .env("XDG_CONFIG_HOME", &xdg)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let _stdin_guard = child.stdin.take().unwrap();
+    let stderr = child.stderr.take().unwrap();
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut output = String::new();
+        let _ = BufReader::new(stderr).read_to_string(&mut output);
+        let _ = tx.send(output);
+    });
+
+    let stderr = match rx.recv_timeout(Duration::from_secs(2)) {
+        Ok(stderr) => stderr,
+        Err(err) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("wt add blocked while hook waited on inherited stdin: {err}");
+        }
+    };
+    let status = child.wait().unwrap();
+    assert!(status.success(), "wt add failed\n{stderr}");
+    assert!(stderr.contains("STDIN-EOF"), "{stderr}");
+    assert!(!stderr.contains("UNEXPECTED-STDIN"), "{stderr}");
 }
 
 #[test]

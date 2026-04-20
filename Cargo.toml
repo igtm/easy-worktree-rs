@@ -1,6 +1,6 @@
 [package]
 name = "easy-worktree"
-version = "0.2.14"
+version = "0.2.15"
 edition = "2024"
 description = "Git worktree を簡単に管理するための CLI ツール"
 authors = ["igtm"]

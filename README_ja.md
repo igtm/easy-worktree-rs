@@ -4,7 +4,7 @@
 
 [English README](./README.md)
 
-`easy-worktree-rs` は Git worktree を管理する `wt` コマンドを提供します。Python 版と同じコマンド体系を目指しており、現在のバージョンは `0.2.14` です。
+`easy-worktree-rs` は Git worktree を管理する `wt` コマンドを提供します。Python 版と同じコマンド体系を目指しており、現在のバージョンは `0.2.15` です。
 
 ## インストール
 
@@ -23,7 +23,7 @@ curl -fsSL https://raw.githubusercontent.com/igtm/easy-worktree-rs/main/install.
 バージョンを指定する場合:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/igtm/easy-worktree-rs/main/install.sh | sh -s -- -v=v0.2.14
+curl -fsSL https://raw.githubusercontent.com/igtm/easy-worktree-rs/main/install.sh | sh -s -- -v=v0.2.15
 ```
 
 Cargo で GitHub からインストールする場合:
@@ -123,8 +123,8 @@ wt rm feature-1
 
 ## パフォーマンス
 
-Rust 版と元の Python 版を、2 文字エイリアスのみを追加した `0.2.14` bump 前の
-`0.2.13` で比較しました。以下は Linux
+Rust 版と元の Python 版を `0.2.13` で比較しました。その後の `0.2.x` patch release
+では、測定対象の経路に大きな変更はありません。以下は Linux
 aarch64 (`Linux-6.12.62+rpt-rpi-2712-aarch64-with-glibc2.41`) でのローカル測定です。
 Rust 版は `cargo build --release --locked` でビルドした `target/release/wt`、Python
 版は元のパッケージを一時 `uv` virtualenv にインストールした `wt` を使いました。

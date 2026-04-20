@@ -9,6 +9,7 @@ use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
+use std::thread;
 use toml::Value as TomlValue;
 use toml::map::Map as TomlMap;
 
@@ -1234,22 +1235,52 @@ fn run_post_add_hook(worktree_path: &Path, work_name: &str, base_dir: &Path, bra
     }
 
     eprintln!("{}", m1("running_hook", hook_path.display()));
-    let status = Command::new(&hook_path)
+    let _ = io::stderr().flush();
+    let mut child = match Command::new(&hook_path)
         .current_dir(worktree_path)
         .env("WT_WORKTREE_PATH", worktree_path)
         .env("WT_WORKTREE_NAME", work_name)
         .env("WT_BASE_DIR", base_dir)
         .env("WT_BRANCH", branch.unwrap_or(work_name))
         .env("WT_ACTION", "add")
-        .output();
-    match status {
-        Ok(output) => {
-            let _ = io::stderr().write_all(&output.stdout);
-            let _ = io::stderr().write_all(&output.stderr);
-            if !output.status.success() {
-                eprintln!("{}", m1("hook_failed", output.status.code().unwrap_or(1)));
-            }
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(err) => {
+            eprintln!("{}", m1("error", err));
+            return;
         }
+    };
+
+    let stdout = child.stdout.take().map(|mut stdout| {
+        thread::spawn(move || {
+            let mut stderr = io::stderr();
+            let _ = io::copy(&mut stdout, &mut stderr);
+            let _ = stderr.flush();
+        })
+    });
+    let stderr = child.stderr.take().map(|mut child_stderr| {
+        thread::spawn(move || {
+            let mut stderr = io::stderr();
+            let _ = io::copy(&mut child_stderr, &mut stderr);
+            let _ = stderr.flush();
+        })
+    });
+
+    let status = child.wait();
+    if let Some(handle) = stdout {
+        let _ = handle.join();
+    }
+    if let Some(handle) = stderr {
+        let _ = handle.join();
+    }
+
+    match status {
+        Ok(status) if status.success() => {}
+        Ok(status) => eprintln!("{}", m1("hook_failed", status.code().unwrap_or(1))),
         Err(err) => eprintln!("{}", m1("error", err)),
     }
 }

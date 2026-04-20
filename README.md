@@ -4,7 +4,7 @@ Rust port of [`easy-worktree`](https://github.com/igtm/easy-worktree).
 
 [日本語版 README](./README_ja.md)
 
-`easy-worktree-rs` provides the `wt` command for managing Git worktrees with the same command surface as the Python package. The current version is `0.2.14`.
+`easy-worktree-rs` provides the `wt` command for managing Git worktrees with the same command surface as the Python package. The current version is `0.2.15`.
 
 ## Install
 
@@ -23,7 +23,7 @@ curl -fsSL https://raw.githubusercontent.com/igtm/easy-worktree-rs/main/install.
 Install a specific release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/igtm/easy-worktree-rs/main/install.sh | sh -s -- -v=v0.2.14
+curl -fsSL https://raw.githubusercontent.com/igtm/easy-worktree-rs/main/install.sh | sh -s -- -v=v0.2.15
 ```
 
 Install from GitHub with Cargo:
@@ -125,7 +125,8 @@ wt rm feature-1
 ## Performance
 
 The Rust binary was benchmarked against the original Python package at
-`0.2.13`, before the alias-only `0.2.14` bump. Results below are from one local run on Linux aarch64
+`0.2.13`; later `0.2.x` patch releases have not materially changed these
+measured paths. Results below are from one local run on Linux aarch64
 (`Linux-6.12.62+rpt-rpi-2712-aarch64-with-glibc2.41`). The Rust command was
 `target/release/wt` built with `cargo build --release --locked`; the Python
 command was the original package installed into a temporary `uv` virtualenv.
