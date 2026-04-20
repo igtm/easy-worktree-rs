@@ -43,22 +43,23 @@ cargo install --path . --locked
 バイナリ名は `wt` です。
 
 ```bash
-wt clone [--bare] <repository_url> [dest_dir]
-wt init
-wt add <work_name> [<base_branch>] [--skip-setup|--no-setup] [--select [<command>...]]
-wt list [--pr] [--quiet|-q] [--days N] [--merged] [--closed] [--all]
-wt diff [<name>] [args...]
-wt config [--global|--local] [<key> [<value>]]
-wt rm <work_name> [-f|--force]
-wt clean [--days N] [--merged] [--closed] [--all] [--yes|-y]
-wt setup
-wt stash <work_name> [<base_branch>]
+wt clone (cn) [--bare] <repository_url> [dest_dir]
+wt init (in)
+wt add (ad) <work_name> [<base_branch>] [--skip-setup|--no-setup] [--select [<command>...]]
+wt list (li, ls) [--pr] [--quiet|-q] [--days N] [--merged] [--closed] [--all]
+wt diff (di, df) [<name>] [args...]
+wt config (cf) [--global|--local] [<key> [<value>]]
+wt rm/remove <work_name> [-f|--force]
+wt clean (cl) [--days N] [--merged] [--closed] [--all] [--yes|-y]
+wt setup (su)
+wt stash (st) <work_name> [<base_branch>]
 wt pr add <number>
-wt select [<name>|-] [<command>...]
-wt current
-wt run <name> <command>...
-wt completion <bash|zsh>
-wt doctor
+wt select (se, sl) [<name>|-] [<command>...]
+wt current (cu, cur)
+wt co/checkout <work_name>
+wt run (ru) <name> <command>...
+wt completion (cm) <bash|zsh>
+wt doctor (dr)
 ```
 
 ## 2 文字エイリアス

@@ -94,6 +94,34 @@ fn version_matches_python_package() {
 }
 
 #[test]
+fn help_mentions_two_letter_aliases() {
+    let output = Command::new(wt_bin())
+        .arg("--help")
+        .env("LANG", "en")
+        .env("LC_ALL", "C")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for expected in [
+        "clone (cn)",
+        "init (in)",
+        "list (li, ls)",
+        "select (se, sl)",
+        "current (cu, cur)",
+        "run (ru)",
+        "completion (cm)",
+        "doctor (dr)",
+    ] {
+        assert!(
+            stdout.contains(expected),
+            "help output did not contain {expected:?}\n{stdout}"
+        );
+    }
+}
+
+#[test]
 fn init_add_select_run_and_remove() {
     let root = temp_dir("basic");
     let repo = root.join("repo");
