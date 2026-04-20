@@ -128,8 +128,57 @@ fn init_add_select_run_and_remove() {
     run_wt(&["run", "feature-one", "touch", "run-ok.txt"], &repo, &xdg);
     assert!(wt_path.join("run-ok.txt").exists());
 
+    fs::write(wt_path.join("README.md"), "changed\n").unwrap();
+    let diff = run_wt(&["diff", "feature-one", "--", "README.md"], &repo, &xdg);
+    assert!(String::from_utf8_lossy(&diff.stdout).contains("changed"));
+
     run_wt(&["rm", "--force", "feature-one"], &repo, &xdg);
     assert!(!wt_path.exists());
+}
+
+#[test]
+fn clone_initializes_regular_and_bare_repositories() {
+    let root = temp_dir("clone");
+    let source = root.join("source");
+    let xdg = root.join("xdg");
+    init_repo(&source);
+
+    let cloned = root.join("cloned");
+    run_wt(
+        &["clone", source.to_str().unwrap(), cloned.to_str().unwrap()],
+        &root,
+        &xdg,
+    );
+    assert!(cloned.join(".wt/config.toml").exists());
+
+    let bare = root.join("bare-clone.git");
+    run_wt(
+        &[
+            "clone",
+            "--bare",
+            source.to_str().unwrap(),
+            bare.to_str().unwrap(),
+        ],
+        &root,
+        &xdg,
+    );
+    assert!(bare.exists());
+    assert!(root.join("bare-clone/main/.wt/config.toml").exists());
+}
+
+#[test]
+fn stash_moves_uncommitted_changes_to_new_worktree() {
+    let root = temp_dir("stash");
+    let repo = root.join("repo");
+    let xdg = root.join("xdg");
+    init_repo(&repo);
+    run_wt(&["init"], &repo, &xdg);
+
+    fs::write(repo.join("untracked.txt"), "unstaged\n").unwrap();
+    run_wt(&["stash", "stash-work"], &repo, &xdg);
+
+    assert!(repo.join(".worktrees/stash-work/untracked.txt").exists());
+    assert!(!repo.join("untracked.txt").exists());
 }
 
 #[test]
