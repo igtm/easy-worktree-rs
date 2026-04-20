@@ -91,32 +91,32 @@ fn template(key: &str) -> (&'static str, &'static str) {
     match key {
         "error" => ("Error: {}", "エラー: {}"),
         "usage" => (
-            "Usage: wt clone [--bare] <repository_url> [dest_dir]",
-            "使用方法: wt clone [--bare] <repository_url> [dest_dir]",
+            "Usage: wt clone (cn) [--bare] <repository_url> [dest_dir]",
+            "使用方法: wt clone (cn) [--bare] <repository_url> [dest_dir]",
         ),
         "usage_add" => (
             "Usage: wt add (ad) <work_name> [<base_branch>] [--skip-setup|--no-setup] [--select [<command>...]]",
             "使用方法: wt add (ad) <作業名> [<base_branch>] [--skip-setup|--no-setup] [--select [<コマンド>...]]",
         ),
         "usage_select" => (
-            "Usage: wt select (sl) [<name>|-] [<command>...]",
-            "使用方法: wt select (sl) [<名前>|-] [<コマンド>...]",
+            "Usage: wt select (se, sl) [<name>|-] [<command>...]",
+            "使用方法: wt select (se, sl) [<名前>|-] [<コマンド>...]",
         ),
         "usage_diff" => (
-            "Usage: wt diff (df) [<name>] [args...]",
-            "使用方法: wt diff (df) [<名前>] [引数...]",
+            "Usage: wt diff (di, df) [<name>] [args...]",
+            "使用方法: wt diff (di, df) [<名前>] [引数...]",
         ),
         "usage_config" => (
-            "Usage: wt config [--global|--local] [<key> [<value>]]",
-            "使用方法: wt config [--global|--local] [<キー> [<値>]]",
+            "Usage: wt config (cf) [--global|--local] [<key> [<value>]]",
+            "使用方法: wt config (cf) [--global|--local] [<キー> [<値>]]",
         ),
         "usage_list" => (
-            "Usage: wt list (ls) [--pr] [--quiet|-q] [--days N] [--merged] [--closed] [--all] [--sort created|last-commit|name|branch] [--asc|--desc]",
-            "使用方法: wt list (ls) [--pr] [--quiet|-q] [--days N] [--merged] [--closed] [--all] [--sort created|last-commit|name|branch] [--asc|--desc]",
+            "Usage: wt list (li, ls) [--pr] [--quiet|-q] [--days N] [--merged] [--closed] [--all] [--sort created|last-commit|name|branch] [--asc|--desc]",
+            "使用方法: wt list (li, ls) [--pr] [--quiet|-q] [--days N] [--merged] [--closed] [--all] [--sort created|last-commit|name|branch] [--asc|--desc]",
         ),
         "usage_run" => (
-            "Usage: wt run <name> <command>...",
-            "使用方法: wt run <名前> <コマンド>...",
+            "Usage: wt run (ru) <name> <command>...",
+            "使用方法: wt run (ru) <名前> <コマンド>...",
         ),
         "usage_rm" => ("Usage: wt rm <work_name>", "使用方法: wt rm <作業名>"),
         "base_not_found" => (
@@ -193,8 +193,8 @@ fn template(key: &str) -> (&'static str, &'static str) {
             "使用方法: wt stash (st) <work_name> [<base_branch>]",
         ),
         "usage_completion" => (
-            "Usage: wt completion <bash|zsh>",
-            "使用方法: wt completion <bash|zsh>",
+            "Usage: wt completion (cm) <bash|zsh>",
+            "使用方法: wt completion (cm) <bash|zsh>",
         ),
         "stashing_changes" => (
             "Stashing local changes...",
@@ -3249,7 +3249,7 @@ fn bash_completion_script() -> &'static str {
     _init_completion || return
 
     local wt_bin="${words[0]}"
-    local commands="clone init add ad select sl list ls co checkout current cur stash st pr rm remove clean cl setup su run completion"
+    local commands="clone cn init in add ad select se sl list li ls diff di df config cf co checkout current cu cur stash st pr rm remove clean cl setup su run ru completion cm doctor dr"
 
     if [[ ${cword} -eq 1 ]]; then
         COMPREPLY=( $(compgen -W "${commands} --git-dir --help --version" -- "${cur}") )
@@ -3275,13 +3275,13 @@ fn bash_completion_script() -> &'static str {
         add|ad)
             COMPREPLY=( $(compgen -W "--skip-setup --no-setup --select ${wt_names}" -- "${cur}") )
             ;;
-        select|sl|co|checkout|run|rm|remove)
+        select|se|sl|co|checkout|run|ru|rm|remove)
             COMPREPLY=( $(compgen -W "${wt_names}" -- "${cur}") )
             ;;
         clean|cl)
             COMPREPLY=( $(compgen -W "--days --merged --closed --all --yes -y" -- "${cur}") )
             ;;
-        list|ls)
+        list|li|ls)
             COMPREPLY=( $(compgen -W "--pr --quiet -q --days --merged --closed --all --sort --asc --desc created last-commit name branch" -- "${cur}") )
             ;;
         stash|st)
@@ -3290,7 +3290,7 @@ fn bash_completion_script() -> &'static str {
         pr)
             COMPREPLY=( $(compgen -W "add co" -- "${cur}") )
             ;;
-        completion)
+        completion|cm)
             COMPREPLY=( $(compgen -W "bash zsh" -- "${cur}") )
             ;;
         *)
@@ -3324,11 +3324,11 @@ fn show_help() {
         println!("コマンド:");
         println!(
             "  {:<55} - リポジトリをクローン",
-            "clone [--bare] <repository_url> [dest_dir]"
+            "clone (cn) [--bare] <repository_url> [dest_dir]"
         );
         println!(
             "  {:<55} - 既存リポジトリをメインリポジトリとして構成",
-            "init"
+            "init (in)"
         );
         println!(
             "  {:<55} - worktree を追加",
@@ -3336,22 +3336,22 @@ fn show_help() {
         );
         println!(
             "  {:<55} - 作業ディレクトリを切り替え（fzf対応）",
-            "select (sl) [<作業名>|-] [<コマンド>...]"
+            "select (se, sl) [<作業名>|-] [<コマンド>...]"
         );
         println!(
             "  {:<55} - worktree 一覧を表示",
-            "list (ls) [--pr] [--quiet|-q] [--days N] [--merged] [--closed] [--all] [--sort ...] [--asc|--desc]"
+            "list (li, ls) [--pr] [--quiet|-q] [--days N] [--merged] [--closed] [--all] [--sort ...] [--asc|--desc]"
         );
         println!(
             "  {:<55} - 変更を表示 (git diff)",
-            "diff (df) [<作業名>] [引数...]"
+            "diff (di, df) [<作業名>] [引数...]"
         );
         println!(
             "  {:<55} - 設定の取得/設定",
-            "config [<キー> [<値>]] [--global|--local]"
+            "config (cf) [<キー> [<値>]] [--global|--local]"
         );
         println!("  {:<55} - worktree のパスを表示", "co/checkout <作業名>");
-        println!("  {:<55} - 現在の worktree 名を表示", "current (cur)");
+        println!("  {:<55} - 現在の worktree 名を表示", "current (cu, cur)");
         println!(
             "  {:<55} - 現在の変更をスタッシュして新規 worktree に移動",
             "stash (st) <作業名> [<base_branch>]"
@@ -3372,10 +3372,14 @@ fn show_help() {
             "  {:<55} - 作業ディレクトリを初期化（ファイルコピー・フック実行）",
             "setup (su)"
         );
-        println!("  {:<55} - システム情報と環境の確認", "doctor");
+        println!(
+            "  {:<55} - コマンドを指定 worktree で実行",
+            "run (ru) <作業名> <コマンド>..."
+        );
+        println!("  {:<55} - システム情報と環境の確認", "doctor (dr)");
         println!(
             "  {:<55} - シェル補完スクリプトを出力",
-            "completion <bash|zsh>"
+            "completion (cm) <bash|zsh>"
         );
         println!("\nオプション:");
         println!("  {:<55} - このヘルプメッセージを表示", "-h, --help");
@@ -3388,34 +3392,37 @@ fn show_help() {
         println!("Commands:");
         println!(
             "  {:<55} - Clone a repository",
-            "clone [--bare] <repository_url> [dest_dir]"
+            "clone (cn) [--bare] <repository_url> [dest_dir]"
         );
-        println!("  {:<55} - Configure existing repository as main", "init");
+        println!(
+            "  {:<55} - Configure existing repository as main",
+            "init (in)"
+        );
         println!(
             "  {:<55} - Add a worktree",
             "add (ad) <work_name> [<base_branch>] [--skip-setup|--no-setup] [--select [<command>...]]"
         );
         println!(
             "  {:<55} - Switch worktree selection (fzf support)",
-            "select (sl) [<name>|-] [<command>...]"
+            "select (se, sl) [<name>|-] [<command>...]"
         );
         println!(
             "  {:<55} - List worktrees",
-            "list (ls) [--pr] [--quiet|-q] [--days N] [--merged] [--closed] [--all] [--sort ...] [--asc|--desc]"
+            "list (li, ls) [--pr] [--quiet|-q] [--days N] [--merged] [--closed] [--all] [--sort ...] [--asc|--desc]"
         );
         println!(
             "  {:<55} - Show changes (git diff)",
-            "diff (df) [<name>] [args...]"
+            "diff (di, df) [<name>] [args...]"
         );
         println!(
             "  {:<55} - Get/Set configuration",
-            "config [<key> [<value>]] [--global|--local]"
+            "config (cf) [<key> [<value>]] [--global|--local]"
         );
         println!(
             "  {:<55} - Show path to a worktree",
             "co/checkout <work_name>"
         );
-        println!("  {:<55} - Show current worktree name", "current (cur)");
+        println!("  {:<55} - Show current worktree name", "current (cu, cur)");
         println!(
             "  {:<55} - Stash current changes and move to new worktree",
             "stash (st) <work_name> [<base_branch>]"
@@ -3437,12 +3444,16 @@ fn show_help() {
             "setup (su)"
         );
         println!(
+            "  {:<55} - Run a command in a worktree",
+            "run (ru) <work_name> <command>..."
+        );
+        println!(
             "  {:<55} - Show system information and check environment",
-            "doctor"
+            "doctor (dr)"
         );
         println!(
             "  {:<55} - Print shell completion script",
-            "completion <bash|zsh>"
+            "completion (cm) <bash|zsh>"
         );
         println!("\nOptions:");
         println!("  {:<55} - Show this help message", "-h, --help");
@@ -3641,11 +3652,11 @@ pub fn main_entry() -> i32 {
             show_version();
             0
         }
-        "clone" => {
+        "clone" | "cn" => {
             cmd_clone(args);
             0
         }
-        "init" => {
+        "init" | "in" => {
             cmd_init(args);
             0
         }
@@ -3653,15 +3664,15 @@ pub fn main_entry() -> i32 {
             cmd_add(args);
             0
         }
-        "list" | "ls" => {
+        "list" | "li" | "ls" => {
             cmd_list(args);
             0
         }
-        "diff" | "df" => {
+        "diff" | "di" | "df" => {
             cmd_diff(args);
             0
         }
-        "config" => {
+        "config" | "cf" => {
             cmd_config(args);
             0
         }
@@ -3685,11 +3696,11 @@ pub fn main_entry() -> i32 {
             cmd_pr(args);
             0
         }
-        "select" | "sl" => {
+        "select" | "se" | "sl" => {
             cmd_select(args);
             0
         }
-        "current" | "cur" => {
+        "current" | "cu" | "cur" => {
             cmd_current(args);
             0
         }
@@ -3697,15 +3708,15 @@ pub fn main_entry() -> i32 {
             cmd_checkout(args);
             0
         }
-        "run" => {
+        "run" | "ru" => {
             cmd_run(args);
             0
         }
-        "completion" => {
+        "completion" | "cm" => {
             cmd_completion(args);
             0
         }
-        "doctor" => {
+        "doctor" | "dr" => {
             cmd_doctor(args);
             0
         }

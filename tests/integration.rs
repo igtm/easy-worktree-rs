@@ -89,7 +89,7 @@ fn version_matches_python_package() {
     assert!(output.status.success());
     assert_eq!(
         String::from_utf8_lossy(&output.stdout).trim(),
-        "easy-worktree version 0.2.13"
+        format!("easy-worktree version {}", env!("CARGO_PKG_VERSION"))
     );
 }
 
@@ -137,6 +137,70 @@ fn init_add_select_run_and_remove() {
 }
 
 #[test]
+fn two_letter_aliases_dispatch() {
+    let root = temp_dir("aliases");
+    let repo = root.join("repo");
+    let source = root.join("source");
+    let xdg = root.join("xdg");
+    init_repo(&repo);
+    init_repo(&source);
+
+    let cloned = root.join("cloned-with-cn");
+    run_wt(
+        &["cn", source.to_str().unwrap(), cloned.to_str().unwrap()],
+        &root,
+        &xdg,
+    );
+    assert!(cloned.join(".wt/config.toml").exists());
+
+    run_wt(&["in"], &repo, &xdg);
+    assert!(repo.join(".wt/config.toml").exists());
+
+    run_wt(&["cf", "worktrees_dir", ".worktrees"], &repo, &xdg);
+    run_wt(&["ad", "alias-one"], &repo, &xdg);
+    let wt_path = repo.join(".worktrees/alias-one");
+    assert!(wt_path.exists());
+
+    let list = run_wt(&["li", "--quiet"], &repo, &xdg);
+    assert!(String::from_utf8_lossy(&list.stdout).contains("alias-one"));
+
+    fs::write(wt_path.join("README.md"), "alias changed\n").unwrap();
+    let diff = run_wt(&["di", "alias-one", "--", "README.md"], &repo, &xdg);
+    assert!(String::from_utf8_lossy(&diff.stdout).contains("alias changed"));
+
+    let selected = run_wt(&["se", "alias-one"], &repo, &xdg);
+    assert!(
+        String::from_utf8_lossy(&selected.stdout).contains(&wt_path.to_string_lossy().to_string())
+    );
+
+    run_wt(&["ru", "alias-one", "touch", "ru-ok.txt"], &repo, &xdg);
+    assert!(wt_path.join("ru-ok.txt").exists());
+
+    let current = run_wt(&["cu"], &wt_path, &xdg);
+    assert_eq!(String::from_utf8_lossy(&current.stdout).trim(), "alias-one");
+
+    let checkout = run_wt(&["co", "alias-one"], &repo, &xdg);
+    assert!(
+        String::from_utf8_lossy(&checkout.stdout).contains(&wt_path.to_string_lossy().to_string())
+    );
+
+    let completion = run_wt(&["cm", "bash"], &repo, &xdg);
+    assert!(String::from_utf8_lossy(&completion.stdout).contains("complete -F"));
+
+    let doctor = run_wt(&["dr"], &repo, &xdg);
+    assert!(String::from_utf8_lossy(&doctor.stdout).contains("easy-worktree doctor"));
+
+    run_wt(&["rm", "--force", "alias-one"], &repo, &xdg);
+    assert!(!wt_path.exists());
+
+    run_wt(&["ad", "clean-alias"], &repo, &xdg);
+    let clean_path = repo.join(".worktrees/clean-alias");
+    assert!(clean_path.exists());
+    run_wt(&["cl", "--all", "--yes"], &repo, &xdg);
+    assert!(!clean_path.exists());
+}
+
+#[test]
 fn clone_initializes_regular_and_bare_repositories() {
     let root = temp_dir("clone");
     let source = root.join("source");
@@ -175,7 +239,7 @@ fn stash_moves_uncommitted_changes_to_new_worktree() {
     run_wt(&["init"], &repo, &xdg);
 
     fs::write(repo.join("untracked.txt"), "unstaged\n").unwrap();
-    run_wt(&["stash", "stash-work"], &repo, &xdg);
+    run_wt(&["st", "stash-work"], &repo, &xdg);
 
     assert!(repo.join(".worktrees/stash-work/untracked.txt").exists());
     assert!(!repo.join("untracked.txt").exists());
@@ -256,7 +320,7 @@ fn setup_hook_uses_worktree_name_when_detached() {
         &repo,
     );
 
-    run_wt(&["setup"], &detached, &xdg);
+    run_wt(&["su"], &detached, &xdg);
     assert_eq!(
         fs::read_to_string(detached.join("branch.txt"))
             .unwrap()

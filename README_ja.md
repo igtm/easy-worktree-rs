@@ -4,7 +4,7 @@
 
 [English README](./README.md)
 
-`easy-worktree-rs` は Git worktree を管理する `wt` コマンドを提供します。Python 版と同じコマンド体系を目指しており、現在のバージョンは `0.2.13` です。
+`easy-worktree-rs` は Git worktree を管理する `wt` コマンドを提供します。Python 版と同じコマンド体系を目指しており、現在のバージョンは `0.2.14` です。
 
 ## インストール
 
@@ -23,7 +23,7 @@ curl -fsSL https://raw.githubusercontent.com/igtm/easy-worktree-rs/main/install.
 バージョンを指定する場合:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/igtm/easy-worktree-rs/main/install.sh | sh -s -- -v=v0.2.13
+curl -fsSL https://raw.githubusercontent.com/igtm/easy-worktree-rs/main/install.sh | sh -s -- -v=v0.2.14
 ```
 
 Cargo で GitHub からインストールする場合:
@@ -60,6 +60,30 @@ wt run <name> <command>...
 wt completion <bash|zsh>
 wt doctor
 ```
+
+## 2 文字エイリアス
+
+主要コマンドには 2 文字エイリアスがあります。既存のエイリアスも互換性のため残しています。
+
+| コマンド | エイリアス |
+| --- | --- |
+| `clone` | `cn` |
+| `init` | `in` |
+| `add` | `ad` |
+| `list` | `li`, `ls` |
+| `diff` | `di`, `df` |
+| `config` | `cf` |
+| `rm` / `remove` | `rm` |
+| `clean` | `cl` |
+| `setup` | `su` |
+| `stash` | `st` |
+| `pr` | `pr` |
+| `select` | `se`, `sl` |
+| `current` | `cu`, `cur` |
+| `checkout` | `co` |
+| `run` | `ru` |
+| `completion` | `cm` |
+| `doctor` | `dr` |
 
 ## 例
 
@@ -98,7 +122,8 @@ wt rm feature-1
 
 ## パフォーマンス
 
-Rust 版と元の Python 版を、同じ `0.2.13` で比較しました。以下は Linux
+Rust 版と元の Python 版を、2 文字エイリアスのみを追加した `0.2.14` bump 前の
+`0.2.13` で比較しました。以下は Linux
 aarch64 (`Linux-6.12.62+rpt-rpi-2712-aarch64-with-glibc2.41`) でのローカル測定です。
 Rust 版は `cargo build --release --locked` でビルドした `target/release/wt`、Python
 版は元のパッケージを一時 `uv` virtualenv にインストールした `wt` を使いました。
