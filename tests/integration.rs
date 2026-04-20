@@ -1,5 +1,5 @@
 use std::fs;
-use std::io::{BufRead, BufReader, Read};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::mpsc;
@@ -62,6 +62,31 @@ fn run_wt_with_home(args: &[&str], cwd: &Path, xdg: &Path, home: &Path) -> Outpu
         .env("HOME", home)
         .output()
         .unwrap();
+    assert!(
+        output.status.success(),
+        "wt {args:?} failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    output
+}
+
+fn run_wt_with_stdin(args: &[&str], cwd: &Path, xdg: &Path, stdin: &str) -> Output {
+    let mut child = Command::new(wt_bin())
+        .args(args)
+        .current_dir(cwd)
+        .env("LANG", "en")
+        .env("LC_ALL", "C")
+        .env("XDG_CONFIG_HOME", xdg)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    if let Some(mut child_stdin) = child.stdin.take() {
+        child_stdin.write_all(stdin.as_bytes()).unwrap();
+    }
+    let output = child.wait_with_output().unwrap();
     assert!(
         output.status.success(),
         "wt {args:?} failed\nstdout:\n{}\nstderr:\n{}",
@@ -176,6 +201,47 @@ fn init_add_select_run_and_remove() {
 
     run_wt(&["rm", "--force", "feature-one"], &repo, &xdg);
     assert!(!wt_path.exists());
+}
+
+#[test]
+fn add_without_name_prompts_and_can_select_created_worktree() {
+    let root = temp_dir("interactive-add");
+    let repo = root.join("repo");
+    let xdg = root.join("xdg");
+    init_repo(&repo);
+    run_wt(&["init"], &repo, &xdg);
+
+    let output = run_wt_with_stdin(&["add"], &repo, &xdg, "interactive-one\n1\n");
+    let wt_path = repo.join(".worktrees/interactive-one");
+    assert!(wt_path.exists());
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stdout.contains(&wt_path.to_string_lossy().to_string()));
+    assert!(stderr.contains("Worktree name:"));
+    assert!(stderr.contains("Select the new worktree now?"));
+}
+
+#[test]
+fn rm_without_name_prompts_for_worktree() {
+    let root = temp_dir("interactive-rm");
+    let repo = root.join("repo");
+    let xdg = root.join("xdg");
+    init_repo(&repo);
+    run_wt(&["init"], &repo, &xdg);
+    run_wt(&["add", "remove-me"], &repo, &xdg);
+    run_wt(&["add", "keep-me"], &repo, &xdg);
+
+    let remove_path = repo.join(".worktrees/remove-me");
+    let keep_path = repo.join(".worktrees/keep-me");
+    assert!(remove_path.exists());
+    assert!(keep_path.exists());
+
+    let output = run_wt_with_stdin(&["rm", "--force"], &repo, &xdg, "remove-me\n");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Select Worktree to Remove"));
+    assert!(!remove_path.exists());
+    assert!(keep_path.exists());
 }
 
 #[test]

@@ -6,7 +6,7 @@
 
 ![easy-worktree-rs hero](./hero.png)
 
-`easy-worktree-rs` は Git worktree を管理する `wt` コマンドを提供します。Python 版と同じコマンド体系を目指しており、現在のバージョンは `0.2.15` です。
+`easy-worktree-rs` は Git worktree を管理する `wt` コマンドを提供します。Python 版と同じコマンド体系を目指しており、現在のバージョンは `0.2.16` です。
 
 ## インストール
 
@@ -25,7 +25,7 @@ curl -fsSL https://raw.githubusercontent.com/igtm/easy-worktree-rs/main/install.
 バージョンを指定する場合:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/igtm/easy-worktree-rs/main/install.sh | sh -s -- -v=v0.2.15
+curl -fsSL https://raw.githubusercontent.com/igtm/easy-worktree-rs/main/install.sh | sh -s -- -v=v0.2.16
 ```
 
 Cargo で GitHub からインストールする場合:
@@ -47,11 +47,11 @@ cargo install --path . --locked
 ```bash
 wt clone (cn) [--bare] <repository_url> [dest_dir]
 wt init (in)
-wt add (ad) <work_name> [<base_branch>] [--skip-setup|--no-setup] [--select [<command>...]]
+wt add (ad) [<work_name> [<base_branch>]] [--skip-setup|--no-setup] [--select [<command>...]]
 wt list (li, ls) [--pr] [--quiet|-q] [--days N] [--merged] [--closed] [--all]
 wt diff (di, df) [<name>] [args...]
 wt config (cf) [--global|--local] [<key> [<value>]]
-wt rm/remove <work_name> [-f|--force]
+wt rm/remove [<work_name>] [-f|--force]
 wt clean (cl) [--days N] [--merged] [--closed] [--all] [--yes|-y]
 wt setup (su)
 wt stash (st) <work_name> [<base_branch>]
@@ -103,6 +103,12 @@ worktree を作成します。
 wt add feature-1
 ```
 
+対話形式で worktree を作成します。
+
+```bash
+wt add
+```
+
 worktree を作成してすぐに選択します。
 
 ```bash
@@ -121,6 +127,12 @@ worktree を削除します。
 
 ```bash
 wt rm feature-1
+```
+
+対話形式で worktree を削除します。
+
+```bash
+wt rm
 ```
 
 ## パフォーマンス

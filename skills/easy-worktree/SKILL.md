@@ -58,8 +58,9 @@ exit
 
 - `wt init` / `wt in`
   - 現在の Git リポジトリを easy-worktree 管理として初期化します。
-- `wt add <name> [base_branch] [--skip-setup|--no-setup] [--select [command...]]` / `wt ad ...`
+- `wt add [<name> [base_branch]] [--skip-setup|--no-setup] [--select [command...]]` / `wt ad ...`
   - 新しい worktree を作成します。
+  - `<name>` なしの場合は作業名を入力し、`--select` なしなら作成後に選択するかを 2 択で確認します。
 - `wt select [<name>|-] [command...]` / `wt se ...` / `wt sl ...`
   - worktree に切り替えます。
   - 引数なしで `fzf` 選択、`-` で直前の worktree に戻ります。
@@ -67,8 +68,9 @@ exit
   - worktree 一覧を表示します。
 - `wt stash <name> [base_branch]` / `wt st ...`
   - 現在の変更を stash し、新規 worktree 側へ移します。
-- `wt rm <name> [-f|--force]`
+- `wt rm [<name>] [-f|--force]`
   - worktree を削除します。
+  - `<name>` なしの場合は削除対象の worktree を対話選択します。
 - `wt clean [--days N] [--merged] [--closed] [--all] [--yes|-y]` / `wt cl ...`
   - 条件に合う不要 worktree をまとめて削除します。
 - `wt pr add <number>`

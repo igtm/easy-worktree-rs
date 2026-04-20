@@ -6,7 +6,7 @@ Rust port of [`easy-worktree`](https://github.com/igtm/easy-worktree).
 
 ![easy-worktree-rs hero](./hero.png)
 
-`easy-worktree-rs` provides the `wt` command for managing Git worktrees with the same command surface as the Python package. The current version is `0.2.15`.
+`easy-worktree-rs` provides the `wt` command for managing Git worktrees with the same command surface as the Python package. The current version is `0.2.16`.
 
 ## Install
 
@@ -25,7 +25,7 @@ curl -fsSL https://raw.githubusercontent.com/igtm/easy-worktree-rs/main/install.
 Install a specific release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/igtm/easy-worktree-rs/main/install.sh | sh -s -- -v=v0.2.15
+curl -fsSL https://raw.githubusercontent.com/igtm/easy-worktree-rs/main/install.sh | sh -s -- -v=v0.2.16
 ```
 
 Install from GitHub with Cargo:
@@ -47,11 +47,11 @@ The CLI binary is `wt`:
 ```bash
 wt clone (cn) [--bare] <repository_url> [dest_dir]
 wt init (in)
-wt add (ad) <work_name> [<base_branch>] [--skip-setup|--no-setup] [--select [<command>...]]
+wt add (ad) [<work_name> [<base_branch>]] [--skip-setup|--no-setup] [--select [<command>...]]
 wt list (li, ls) [--pr] [--quiet|-q] [--days N] [--merged] [--closed] [--all]
 wt diff (di, df) [<name>] [args...]
 wt config (cf) [--global|--local] [<key> [<value>]]
-wt rm/remove <work_name> [-f|--force]
+wt rm/remove [<work_name>] [-f|--force]
 wt clean (cl) [--days N] [--merged] [--closed] [--all] [--yes|-y]
 wt setup (su)
 wt stash (st) <work_name> [<base_branch>]
@@ -104,6 +104,12 @@ Create a worktree:
 wt add feature-1
 ```
 
+Create a worktree interactively:
+
+```bash
+wt add
+```
+
 Create and immediately select a worktree:
 
 ```bash
@@ -122,6 +128,12 @@ Remove a worktree:
 
 ```bash
 wt rm feature-1
+```
+
+Remove a worktree interactively:
+
+```bash
+wt rm
 ```
 
 ## Performance

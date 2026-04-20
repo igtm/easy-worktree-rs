@@ -96,8 +96,8 @@ fn template(key: &str) -> (&'static str, &'static str) {
             "使用方法: wt clone (cn) [--bare] <repository_url> [dest_dir]",
         ),
         "usage_add" => (
-            "Usage: wt add (ad) <work_name> [<base_branch>] [--skip-setup|--no-setup] [--select [<command>...]]",
-            "使用方法: wt add (ad) <作業名> [<base_branch>] [--skip-setup|--no-setup] [--select [<コマンド>...]]",
+            "Usage: wt add (ad) [<work_name> [<base_branch>]] [--skip-setup|--no-setup] [--select [<command>...]]",
+            "使用方法: wt add (ad) [<作業名> [<base_branch>]] [--skip-setup|--no-setup] [--select [<コマンド>...]]",
         ),
         "usage_select" => (
             "Usage: wt select (se, sl) [<name>|-] [<command>...]",
@@ -119,7 +119,10 @@ fn template(key: &str) -> (&'static str, &'static str) {
             "Usage: wt run (ru) <name> <command>...",
             "使用方法: wt run (ru) <名前> <コマンド>...",
         ),
-        "usage_rm" => ("Usage: wt rm <work_name>", "使用方法: wt rm <作業名>"),
+        "usage_rm" => (
+            "Usage: wt rm [<work_name>] [-f|--force]",
+            "使用方法: wt rm [<作業名>] [-f|--force]",
+        ),
         "base_not_found" => (
             "Main repository directory not found",
             "メインリポジトリのディレクトリが見つかりません",
@@ -215,6 +218,22 @@ fn template(key: &str) -> (&'static str, &'static str) {
         ),
         "select_not_found" => ("Worktree not found: {}", "worktree が見つかりません: {}"),
         "select_no_last" => ("No previous selection found", "以前の選択が見つかりません"),
+        "prompt_worktree_name" => ("Worktree name: ", "作業名: "),
+        "prompt_select_created" => (
+            "Select the new worktree now?",
+            "作成した worktree を選択しますか？",
+        ),
+        "prompt_choice" => ("Choice: ", "選択: "),
+        "prompt_choice_1_2" => ("Choice [1/2]: ", "選択 [1/2]: "),
+        "choice_yes" => ("Yes", "はい"),
+        "choice_no" => ("No", "いいえ"),
+        "invalid_choice" => ("Invalid choice", "無効な選択です"),
+        "select_worktree_to_remove" => ("Select Worktree to Remove", "削除する worktree を選択"),
+        "no_worktree_selected" => ("No worktree selected", "worktree が選択されていません"),
+        "no_removable_worktrees" => (
+            "No removable worktrees found",
+            "削除できる worktree が見つかりません",
+        ),
         "setting_up" => ("Setting up: {} -> {}", "セットアップ中: {} -> {}"),
         "completed_setup" => (
             "Completed setup of {} files",
@@ -405,6 +424,119 @@ fn interactive_shell() -> (String, ShellMode) {
         env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string()),
         ShellMode::UnixLike,
     )
+}
+
+fn prompt_line(prompt: &str) -> Option<String> {
+    eprint!("{prompt}");
+    let _ = io::stderr().flush();
+
+    let mut input = String::new();
+    match io::stdin().read_line(&mut input) {
+        Ok(0) => None,
+        Ok(_) => Some(input.trim().to_string()),
+        Err(err) => fatal_error(err),
+    }
+}
+
+fn prompt_worktree_name() -> Option<String> {
+    let name = prompt_line(&m0("prompt_worktree_name"))?;
+    (!name.is_empty()).then_some(name)
+}
+
+fn prompt_select_created_worktree() -> bool {
+    eprintln!("{}", m0("prompt_select_created"));
+    eprintln!("  1) {}", m0("choice_yes"));
+    eprintln!("  2) {}", m0("choice_no"));
+
+    loop {
+        let Some(choice) = prompt_line(&m0("prompt_choice_1_2")) else {
+            return false;
+        };
+        match choice.to_lowercase().as_str() {
+            "1" | "y" | "yes" => return true,
+            "" | "2" | "n" | "no" => return false,
+            _ => eprintln!("{}", m0("invalid_choice")),
+        }
+    }
+}
+
+fn worktree_display_name(base_dir: &Path, path: &Path) -> String {
+    if same_path(path, base_dir) {
+        "main".into()
+    } else {
+        path.file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned()
+    }
+}
+
+fn choose_worktree_interactively(
+    names: &[String],
+    header: &str,
+    current_sel: Option<&str>,
+) -> Option<String> {
+    if names.is_empty() {
+        return None;
+    }
+
+    if which_cmd("fzf").is_some() && io::stdin().is_terminal() {
+        let mut fzf_input = String::new();
+        for name in names {
+            if Some(name.as_str()) == current_sel {
+                fzf_input.push_str(&format!("{name} (*)\n"));
+            } else {
+                fzf_input.push_str(&format!("{name}\n"));
+            }
+        }
+        let mut child = Command::new("fzf")
+            .args(["--height", "40%", "--reverse", "--header"])
+            .arg(header)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap_or_else(|err| fatal_error(err));
+        if let Some(stdin) = child.stdin.as_mut() {
+            let _ = stdin.write_all(fzf_input.as_bytes());
+        }
+        let output = child
+            .wait_with_output()
+            .unwrap_or_else(|err| fatal_error(err));
+        if output.status.success() {
+            let selected = String::from_utf8_lossy(&output.stdout)
+                .split_whitespace()
+                .next()
+                .unwrap_or("")
+                .to_string();
+            return (!selected.is_empty()).then_some(selected);
+        }
+        return None;
+    }
+
+    eprintln!("{header}");
+    for (index, name) in names.iter().enumerate() {
+        if Some(name.as_str()) == current_sel {
+            eprintln!("  {}) {} (*)", index + 1, name);
+        } else {
+            eprintln!("  {}) {}", index + 1, name);
+        }
+    }
+
+    loop {
+        let choice = prompt_line(&m0("prompt_choice"))?;
+        if choice.is_empty() {
+            return None;
+        }
+        if let Ok(index) = choice.parse::<usize>() {
+            if (1..=names.len()).contains(&index) {
+                return names.get(index - 1).cloned();
+            }
+        }
+        if names.iter().any(|name| name == &choice) {
+            return Some(choice);
+        }
+        eprintln!("{}", m0("invalid_choice"));
+    }
 }
 
 fn which_cmd(name: &str) -> Option<PathBuf> {
@@ -1696,14 +1828,11 @@ fn add_worktree(
 }
 
 fn cmd_add(args: &[String]) {
-    if args.is_empty() {
-        eprintln!("{}", m0("usage_add"));
-        std::process::exit(1);
-    }
     let mut clean_args = Vec::new();
     let mut skip_setup = false;
     let mut select = false;
     let mut select_command: Option<Vec<String>> = None;
+    let mut prompted_work_name = false;
     let mut i = 0;
     while i < args.len() {
         let arg = &args[i];
@@ -1731,8 +1860,12 @@ fn cmd_add(args: &[String]) {
         }
     }
     if clean_args.is_empty() {
-        eprintln!("{}", m0("usage_add"));
-        std::process::exit(1);
+        let Some(work_name) = prompt_worktree_name() else {
+            eprintln!("{}", m0("usage_add"));
+            std::process::exit(1);
+        };
+        clean_args.push(work_name);
+        prompted_work_name = true;
     }
     let work_name = clean_args[0].clone();
     let branch_to_use = clean_args.get(1).map(String::as_str);
@@ -1744,7 +1877,8 @@ fn cmd_add(args: &[String]) {
         base_dir.clone(),
         skip_setup,
     );
-    if select {
+    let should_select = select || (prompted_work_name && prompt_select_created_worktree());
+    if should_select {
         let base_dir = base_dir.unwrap_or_else(|| {
             find_base_dir().unwrap_or_else(|| fatal(m1("error", m0("base_not_found"))))
         });
@@ -2353,17 +2487,7 @@ fn sort_worktrees(worktrees: &mut [WorktreeInfo], sort_key: &str, descending: bo
 fn get_worktree_names(base_dir: &Path) -> Vec<String> {
     get_worktree_info(base_dir)
         .into_iter()
-        .map(|wt| {
-            if same_path(&wt.path, base_dir) {
-                "main".into()
-            } else {
-                wt.path
-                    .file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .into_owned()
-            }
-        })
+        .map(|wt| worktree_display_name(base_dir, &wt.path))
         .collect()
 }
 
@@ -2810,10 +2934,6 @@ fn cmd_config(args: &[String]) {
 }
 
 fn cmd_remove(args: &[String]) {
-    if args.is_empty() {
-        eprintln!("{}", m0("usage_rm"));
-        std::process::exit(1);
-    }
     let Some(base_dir) = find_base_dir() else {
         fatal(m1("error", m0("base_not_found")));
     };
@@ -2826,9 +2946,19 @@ fn cmd_remove(args: &[String]) {
             work_name = Some(arg.clone());
         }
     }
-    let Some(work_name) = work_name else {
-        eprintln!("{}", m0("usage_rm"));
-        std::process::exit(1);
+    let work_name = if let Some(work_name) = work_name {
+        work_name
+    } else {
+        let names = get_worktree_info(&base_dir)
+            .into_iter()
+            .filter(|wt| !same_path(&wt.path, &base_dir))
+            .map(|wt| worktree_display_name(&base_dir, &wt.path))
+            .collect::<Vec<_>>();
+        if names.is_empty() {
+            fatal(m1("error", m0("no_removable_worktrees")));
+        }
+        choose_worktree_interactively(&names, &m0("select_worktree_to_remove"), None)
+            .unwrap_or_else(|| fatal(m1("error", m0("no_worktree_selected"))))
     };
     let target = get_worktree_info(&base_dir).into_iter().find(|wt| {
         wt.path.file_name().is_some_and(|n| n == work_name.as_str())
@@ -3363,7 +3493,7 @@ fn show_help() {
         );
         println!(
             "  {:<55} - worktree を追加",
-            "add (ad) <作業名> [<base_branch>] [--skip-setup|--no-setup] [--select [<コマンド>...]]"
+            "add (ad) [<作業名> [<base_branch>]] [--skip-setup|--no-setup] [--select [<コマンド>...]]"
         );
         println!(
             "  {:<55} - 作業ディレクトリを切り替え（fzf対応）",
@@ -3393,7 +3523,7 @@ fn show_help() {
         );
         println!(
             "  {:<55} - worktree を削除",
-            "rm/remove <作業名> [-f|--force]"
+            "rm/remove [<作業名>] [-f|--force]"
         );
         println!(
             "  {:<55} - 不要な worktree を削除",
@@ -3431,7 +3561,7 @@ fn show_help() {
         );
         println!(
             "  {:<55} - Add a worktree",
-            "add (ad) <work_name> [<base_branch>] [--skip-setup|--no-setup] [--select [<command>...]]"
+            "add (ad) [<work_name> [<base_branch>]] [--skip-setup|--no-setup] [--select [<command>...]]"
         );
         println!(
             "  {:<55} - Switch worktree selection (fzf support)",
@@ -3464,7 +3594,7 @@ fn show_help() {
         );
         println!(
             "  {:<55} - Remove a worktree",
-            "rm/remove <work_name> [-f|--force]"
+            "rm/remove [<work_name>] [-f|--force]"
         );
         println!(
             "  {:<55} - Remove unused/merged worktrees",
