@@ -96,6 +96,27 @@ Remove a worktree:
 wt rm feature-1
 ```
 
+## Performance
+
+The Rust binary was benchmarked against the original Python package at the
+same version, `0.2.13`. Results below are from one local run on Linux aarch64
+(`Linux-6.12.62+rpt-rpi-2712-aarch64-with-glibc2.41`). The Rust command was
+`target/release/wt` built with `cargo build --release --locked`; the Python
+command was the original package installed into a temporary `uv` virtualenv.
+Each command used 8 warmup runs and 50 measured runs. Repository commands ran
+against the same temporary Git repository with 20 worktrees.
+
+| Command | Rust mean | Python mean | Speedup |
+| --- | ---: | ---: | ---: |
+| `wt --version` | 0.54 ms | 75.04 ms | 139.9x |
+| `wt completion bash` | 0.57 ms | 72.68 ms | 126.9x |
+| `wt list --quiet` | 95.06 ms | 204.65 ms | 2.2x |
+| `wt current` | 85.59 ms | 210.32 ms | 2.5x |
+| `wt select feature-10` | 173.92 ms | 339.16 ms | 2.0x |
+
+Commands that call `git` are dominated by Git subprocess time, so their speedup
+is smaller than pure startup-heavy commands.
+
 ## Development
 
 ```bash

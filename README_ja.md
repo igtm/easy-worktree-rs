@@ -96,6 +96,25 @@ worktree を削除します。
 wt rm feature-1
 ```
 
+## パフォーマンス
+
+Rust 版と元の Python 版を、同じ `0.2.13` で比較しました。以下は Linux
+aarch64 (`Linux-6.12.62+rpt-rpi-2712-aarch64-with-glibc2.41`) でのローカル測定です。
+Rust 版は `cargo build --release --locked` でビルドした `target/release/wt`、Python
+版は元のパッケージを一時 `uv` virtualenv にインストールした `wt` を使いました。
+各コマンドは warmup 8 回、測定 50 回です。リポジトリ操作は、worktree を 20 個持つ同じ一時 Git
+リポジトリで測定しました。
+
+| コマンド | Rust 平均 | Python 平均 | 高速化 |
+| --- | ---: | ---: | ---: |
+| `wt --version` | 0.54 ms | 75.04 ms | 139.9x |
+| `wt completion bash` | 0.57 ms | 72.68 ms | 126.9x |
+| `wt list --quiet` | 95.06 ms | 204.65 ms | 2.2x |
+| `wt current` | 85.59 ms | 210.32 ms | 2.5x |
+| `wt select feature-10` | 173.92 ms | 339.16 ms | 2.0x |
+
+`git` を呼び出すコマンドは Git subprocess の実行時間が支配的なため、起動コスト中心のコマンドより高速化幅は小さくなります。
+
 ## 開発
 
 ```bash
