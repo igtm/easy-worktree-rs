@@ -157,6 +157,8 @@ fn two_letter_aliases_dispatch() {
     assert!(repo.join(".wt/config.toml").exists());
 
     run_wt(&["cf", "worktrees_dir", ".worktrees"], &repo, &xdg);
+    run_wt(&["su"], &repo, &xdg);
+
     run_wt(&["ad", "alias-one"], &repo, &xdg);
     let wt_path = repo.join(".worktrees/alias-one");
     assert!(wt_path.exists());
@@ -198,6 +200,13 @@ fn two_letter_aliases_dispatch() {
     assert!(clean_path.exists());
     run_wt(&["cl", "--all", "--yes"], &repo, &xdg);
     assert!(!clean_path.exists());
+
+    fs::write(repo.join("alias-stash.txt"), "stash through alias\n").unwrap();
+    run_wt(&["st", "stash-alias"], &repo, &xdg);
+    let stash_path = repo.join(".worktrees/stash-alias");
+    assert!(stash_path.join("alias-stash.txt").exists());
+    run_wt(&["rm", "--force", "stash-alias"], &repo, &xdg);
+    assert!(!stash_path.exists());
 }
 
 #[test]
@@ -239,7 +248,7 @@ fn stash_moves_uncommitted_changes_to_new_worktree() {
     run_wt(&["init"], &repo, &xdg);
 
     fs::write(repo.join("untracked.txt"), "unstaged\n").unwrap();
-    run_wt(&["st", "stash-work"], &repo, &xdg);
+    run_wt(&["stash", "stash-work"], &repo, &xdg);
 
     assert!(repo.join(".worktrees/stash-work/untracked.txt").exists());
     assert!(!repo.join("untracked.txt").exists());
@@ -320,7 +329,7 @@ fn setup_hook_uses_worktree_name_when_detached() {
         &repo,
     );
 
-    run_wt(&["su"], &detached, &xdg);
+    run_wt(&["setup"], &detached, &xdg);
     assert_eq!(
         fs::read_to_string(detached.join("branch.txt"))
             .unwrap()
