@@ -95,29 +95,41 @@ fn version_matches_python_package() {
 
 #[test]
 fn help_mentions_two_letter_aliases() {
-    let output = Command::new(wt_bin())
-        .arg("--help")
-        .env("LANG", "en")
-        .env("LC_ALL", "C")
-        .output()
-        .unwrap();
-    assert!(output.status.success());
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    for expected in [
+    let expected = [
         "clone (cn)",
         "init (in)",
+        "add (ad)",
         "list (li, ls)",
+        "diff (di, df)",
+        "config (cf)",
+        "rm/remove",
+        "clean (cl)",
+        "setup (su)",
+        "stash (st)",
+        "pr add",
         "select (se, sl)",
         "current (cu, cur)",
+        "co/checkout",
         "run (ru)",
         "completion (cm)",
         "doctor (dr)",
-    ] {
-        assert!(
-            stdout.contains(expected),
-            "help output did not contain {expected:?}\n{stdout}"
-        );
+    ];
+
+    for lang in ["en", "ja_JP.UTF-8"] {
+        let output = Command::new(wt_bin())
+            .arg("--help")
+            .env("LANG", lang)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for expected in expected {
+            assert!(
+                stdout.contains(expected),
+                "{lang} help output did not contain {expected:?}\n{stdout}"
+            );
+        }
     }
 }
 
