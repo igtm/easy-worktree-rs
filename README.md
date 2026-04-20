@@ -4,6 +4,8 @@ Rust port of [`easy-worktree`](https://github.com/igtm/easy-worktree).
 
 [日本語版 README](./README_ja.md)
 
+![easy-worktree-rs hero](./hero.png)
+
 `easy-worktree-rs` provides the `wt` command for managing Git worktrees with the same command surface as the Python package. The current version is `0.2.15`.
 
 ## Install

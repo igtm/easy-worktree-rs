@@ -4,6 +4,8 @@
 
 [English README](./README.md)
 
+![easy-worktree-rs hero](./hero.png)
+
 `easy-worktree-rs` は Git worktree を管理する `wt` コマンドを提供します。Python 版と同じコマンド体系を目指しており、現在のバージョンは `0.2.15` です。
 
 ## インストール
