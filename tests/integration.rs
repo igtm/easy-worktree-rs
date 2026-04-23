@@ -211,7 +211,7 @@ fn add_without_name_prompts_and_can_select_created_worktree() {
     init_repo(&repo);
     run_wt(&["init"], &repo, &xdg);
 
-    let output = run_wt_with_stdin(&["add"], &repo, &xdg, "interactive-one\n1\n");
+    let output = run_wt_with_stdin(&["add"], &repo, &xdg, "interactive-one\n\n");
     let wt_path = repo.join(".worktrees/interactive-one");
     assert!(wt_path.exists());
 
@@ -219,7 +219,7 @@ fn add_without_name_prompts_and_can_select_created_worktree() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stdout.contains(&wt_path.to_string_lossy().to_string()));
     assert!(stderr.contains("Worktree name:"));
-    assert!(stderr.contains("Select the new worktree now?"));
+    assert!(stderr.contains("Select the new worktree now? [Y/n]:"));
 }
 
 #[test]

@@ -220,13 +220,10 @@ fn template(key: &str) -> (&'static str, &'static str) {
         "select_no_last" => ("No previous selection found", "以前の選択が見つかりません"),
         "prompt_worktree_name" => ("Worktree name: ", "作業名: "),
         "prompt_select_created" => (
-            "Select the new worktree now?",
-            "作成した worktree を選択しますか？",
+            "Select the new worktree now? [Y/n]: ",
+            "作成した worktree を選択しますか？ [Y/n]: ",
         ),
         "prompt_choice" => ("Choice: ", "選択: "),
-        "prompt_choice_1_2" => ("Choice [1/2]: ", "選択 [1/2]: "),
-        "choice_yes" => ("Yes", "はい"),
-        "choice_no" => ("No", "いいえ"),
         "invalid_choice" => ("Invalid choice", "無効な選択です"),
         "select_worktree_to_remove" => ("Select Worktree to Remove", "削除する worktree を選択"),
         "no_worktree_selected" => ("No worktree selected", "worktree が選択されていません"),
@@ -444,17 +441,13 @@ fn prompt_worktree_name() -> Option<String> {
 }
 
 fn prompt_select_created_worktree() -> bool {
-    eprintln!("{}", m0("prompt_select_created"));
-    eprintln!("  1) {}", m0("choice_yes"));
-    eprintln!("  2) {}", m0("choice_no"));
-
     loop {
-        let Some(choice) = prompt_line(&m0("prompt_choice_1_2")) else {
-            return false;
+        let Some(choice) = prompt_line(&m0("prompt_select_created")) else {
+            return true;
         };
         match choice.to_lowercase().as_str() {
-            "1" | "y" | "yes" => return true,
-            "" | "2" | "n" | "no" => return false,
+            "" | "y" | "yes" => return true,
+            "n" | "no" => return false,
             _ => eprintln!("{}", m0("invalid_choice")),
         }
     }
