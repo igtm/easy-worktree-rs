@@ -74,7 +74,7 @@ exit
 - `wt clean [--days N] [--merged] [--closed] [--all] [--yes|-y]` / `wt cl ...`
   - 条件に合う不要 worktree をまとめて削除します。
 - `wt pr add <number>`
-  - PR から `pr@<number>` worktree を作成します（`gh` 必須）。
+  - PR の head branch 名と同じ名前の worktree を作成します（`gh` 必須）。
 - `wt setup` / `wt su`
   - 設定に従って `.env` などをコピーし、hook を実行します。
 - `wt diff [<name>] [args...]` / `wt di ...` / `wt df ...`
@@ -116,7 +116,7 @@ wt se fix/login-bug
 
 ```bash
 wt pr add 123
-wt se pr@123
+wt pr co 123
 ```
 
 ### 4. 古い worktree を掃除する

@@ -6,7 +6,7 @@
 
 ![easy-worktree-rs hero](./hero.png)
 
-`easy-worktree-rs` は Git worktree を管理する `wt` コマンドを提供します。Python 版と同じコマンド体系を目指しており、現在のバージョンは `0.2.17` です。
+`easy-worktree-rs` は Git worktree を管理する `wt` コマンドを提供します。Python 版と同じコマンド体系を目指しており、現在のバージョンは `0.2.18` です。
 
 ## インストール
 
@@ -25,7 +25,7 @@ curl -fsSL https://raw.githubusercontent.com/igtm/easy-worktree-rs/main/install.
 バージョンを指定する場合:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/igtm/easy-worktree-rs/main/install.sh | sh -s -- -v=v0.2.17
+curl -fsSL https://raw.githubusercontent.com/igtm/easy-worktree-rs/main/install.sh | sh -s -- -v=v0.2.18
 ```
 
 Cargo で GitHub からインストールする場合:
@@ -133,6 +133,19 @@ wt rm feature-1
 
 ```bash
 wt rm
+```
+
+対話形式で worktree を選択します（`fzf` があれば利用し、なければ番号選択にフォールバックします）。
+
+```bash
+wt select
+```
+
+PR の head branch 名で worktree を作成し、その path を確認します。
+
+```bash
+wt pr add 123
+wt pr co 123
 ```
 
 ## パフォーマンス

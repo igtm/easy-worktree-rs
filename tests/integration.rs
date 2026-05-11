@@ -1,9 +1,15 @@
+use std::env;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+#[cfg(unix)]
+use std::os::unix::fs::symlink;
 
 fn wt_bin() -> &'static str {
     env!("CARGO_BIN_EXE_wt")
@@ -41,6 +47,25 @@ fn run_wt(args: &[&str], cwd: &Path, xdg: &Path) -> Output {
         .env("LANG", "en")
         .env("LC_ALL", "C")
         .env("XDG_CONFIG_HOME", xdg)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "wt {args:?} failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    output
+}
+
+fn run_wt_with_path(args: &[&str], cwd: &Path, xdg: &Path, path: &Path) -> Output {
+    let output = Command::new(wt_bin())
+        .args(args)
+        .current_dir(cwd)
+        .env("LANG", "en")
+        .env("LC_ALL", "C")
+        .env("XDG_CONFIG_HOME", xdg)
+        .env("PATH", path)
         .output()
         .unwrap();
     assert!(
@@ -94,6 +119,139 @@ fn run_wt_with_stdin(args: &[&str], cwd: &Path, xdg: &Path, stdin: &str) -> Outp
         String::from_utf8_lossy(&output.stderr)
     );
     output
+}
+
+fn run_wt_with_stdin_and_path(
+    args: &[&str],
+    cwd: &Path,
+    xdg: &Path,
+    stdin: &str,
+    path: &Path,
+) -> Output {
+    let mut child = Command::new(wt_bin())
+        .args(args)
+        .current_dir(cwd)
+        .env("LANG", "en")
+        .env("LC_ALL", "C")
+        .env("XDG_CONFIG_HOME", xdg)
+        .env("PATH", path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    if let Some(mut child_stdin) = child.stdin.take() {
+        child_stdin.write_all(stdin.as_bytes()).unwrap();
+    }
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "wt {args:?} failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    output
+}
+
+#[cfg(unix)]
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
+#[cfg(unix)]
+fn run_wt_with_tty_stdin_and_path_and_shell(
+    args: &[&str],
+    cwd: &Path,
+    xdg: &Path,
+    stdin: &str,
+    path: &Path,
+    shell: &Path,
+) -> Output {
+    let shell = shell_quote(&shell.display().to_string());
+    let command = std::iter::once(wt_bin())
+        .chain(args.iter().copied())
+        .map(shell_quote)
+        .collect::<Vec<_>>()
+        .join(" ");
+    let command = format!("SHELL={shell} {command} 2>&1");
+    let mut child = Command::new(find_cmd_path("script"))
+        .args(["-qec", &command, "/dev/null"])
+        .current_dir(cwd)
+        .env("LANG", "en")
+        .env("LC_ALL", "C")
+        .env("XDG_CONFIG_HOME", xdg)
+        .env("PATH", path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    if let Some(mut child_stdin) = child.stdin.take() {
+        child_stdin.write_all(stdin.as_bytes()).unwrap();
+    }
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "tty wt {args:?} failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    output
+}
+
+fn find_cmd_path(name: &str) -> PathBuf {
+    for dir in env::split_paths(&env::var_os("PATH").expect("PATH should be set")) {
+        let candidate = dir.join(name);
+        if candidate.is_file() {
+            return candidate;
+        }
+        #[cfg(windows)]
+        for ext in ["exe", "cmd", "bat"] {
+            let candidate = dir.join(format!("{name}.{ext}"));
+            if candidate.is_file() {
+                return candidate;
+            }
+        }
+    }
+    panic!("could not find command in PATH: {name}");
+}
+
+fn path_with_git_only(root: &Path) -> PathBuf {
+    let bin_dir = root.join("git-only-bin");
+    fs::create_dir_all(&bin_dir).unwrap();
+    let git_path = find_cmd_path("git");
+    #[cfg(unix)]
+    {
+        symlink(&git_path, bin_dir.join("git")).unwrap();
+    }
+    #[cfg(not(unix))]
+    {
+        let file_name = git_path
+            .file_name()
+            .expect("git path should have a file name");
+        fs::copy(&git_path, bin_dir.join(file_name)).unwrap();
+    }
+    bin_dir
+}
+
+#[cfg(unix)]
+fn write_executable_script(path: &Path, content: &str) {
+    fs::write(path, content).unwrap();
+    fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+#[cfg(unix)]
+fn path_with_git_and_script(root: &Path, name: &str, content: &str) -> PathBuf {
+    let bin_dir = path_with_git_only(root);
+    write_executable_script(&bin_dir.join(name), content);
+    bin_dir
+}
+
+#[cfg(unix)]
+fn create_test_shell(root: &Path) -> PathBuf {
+    let shell = root.join("test-shell.sh");
+    write_executable_script(&shell, "#!/bin/sh\npwd\n");
+    shell
 }
 
 fn init_repo(repo: &Path) {
@@ -204,6 +362,45 @@ fn init_add_select_run_and_remove() {
 }
 
 #[test]
+fn slash_worktree_names_are_preserved_across_commands() {
+    let root = temp_dir("slash-name");
+    let repo = root.join("repo");
+    let xdg = root.join("xdg");
+    init_repo(&repo);
+    run_wt(&["init"], &repo, &xdg);
+
+    run_wt(&["add", "feature/topic"], &repo, &xdg);
+    let wt_path = repo.join(".worktrees/feature/topic");
+    assert!(wt_path.exists());
+
+    let list = run_wt(&["list", "--quiet"], &repo, &xdg);
+    assert!(String::from_utf8_lossy(&list.stdout).contains("feature/topic"));
+
+    let checkout = run_wt(&["checkout", "feature/topic"], &repo, &xdg);
+    assert!(
+        String::from_utf8_lossy(&checkout.stdout).contains(&wt_path.to_string_lossy().to_string())
+    );
+
+    let selected = run_wt(&["select", "feature/topic"], &repo, &xdg);
+    assert!(
+        String::from_utf8_lossy(&selected.stdout).contains(&wt_path.to_string_lossy().to_string())
+    );
+
+    let current = run_wt(&["current"], &wt_path, &xdg);
+    assert_eq!(
+        String::from_utf8_lossy(&current.stdout).trim(),
+        "feature/topic"
+    );
+
+    fs::write(wt_path.join("README.md"), "slash path changed\n").unwrap();
+    let diff = run_wt(&["diff", "feature/topic", "--", "README.md"], &repo, &xdg);
+    assert!(String::from_utf8_lossy(&diff.stdout).contains("slash path changed"));
+
+    run_wt(&["rm", "--force", "feature/topic"], &repo, &xdg);
+    assert!(!wt_path.exists());
+}
+
+#[test]
 fn add_without_name_prompts_and_can_select_created_worktree() {
     let root = temp_dir("interactive-add");
     let repo = root.join("repo");
@@ -242,6 +439,140 @@ fn rm_without_name_prompts_for_worktree() {
     assert!(stderr.contains("Select Worktree to Remove"));
     assert!(!remove_path.exists());
     assert!(keep_path.exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn pr_add_uses_head_branch_name_for_branch_and_worktree() {
+    let root = temp_dir("pr-branch-name");
+    let repo = root.join("repo");
+    let xdg = root.join("xdg");
+    let origin = root.join("origin.git");
+    init_repo(&repo);
+
+    run("git", &["init", "--bare", origin.to_str().unwrap()], &root);
+    run(
+        "git",
+        &["remote", "add", "origin", origin.to_str().unwrap()],
+        &repo,
+    );
+    run("git", &["push", "-u", "origin", "main"], &repo);
+
+    run("git", &["checkout", "-b", "feature/pr-branch"], &repo);
+    fs::write(repo.join("pr.txt"), "from pr\n").unwrap();
+    run("git", &["add", "pr.txt"], &repo);
+    run("git", &["commit", "-m", "pr branch"], &repo);
+    run("git", &["push", "-u", "origin", "feature/pr-branch"], &repo);
+    run("git", &["push", "origin", "HEAD:refs/pull/123/head"], &repo);
+    run("git", &["checkout", "main"], &repo);
+    run("git", &["branch", "-D", "feature/pr-branch"], &repo);
+
+    run_wt(&["init"], &repo, &xdg);
+
+    let mock_path = path_with_git_and_script(
+        &root,
+        "gh",
+        "#!/bin/sh\nprintf '{\"number\":123,\"headRefName\":\"feature/pr-branch\"}\\n'\n",
+    );
+    run_wt_with_path(&["pr", "add", "123"], &repo, &xdg, &mock_path);
+
+    let wt_path = repo.join(".worktrees/feature/pr-branch");
+    assert!(wt_path.exists());
+    assert_eq!(
+        String::from_utf8_lossy(&run("git", &["branch", "--show-current"], &wt_path).stdout).trim(),
+        "feature/pr-branch"
+    );
+
+    let list = run_wt(&["list", "--quiet"], &repo, &xdg);
+    assert!(String::from_utf8_lossy(&list.stdout).contains("feature/pr-branch"));
+
+    let checkout = run_wt_with_path(&["pr", "co", "123"], &repo, &xdg, &mock_path);
+    assert!(
+        String::from_utf8_lossy(&checkout.stdout).contains(&wt_path.to_string_lossy().to_string())
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn select_without_fzf_falls_back_to_numbered_prompt() {
+    let root = temp_dir("interactive-select-no-fzf");
+    let repo = root.join("repo");
+    let xdg = root.join("xdg");
+    init_repo(&repo);
+    run_wt(&["init"], &repo, &xdg);
+    run_wt(&["add", "fallback-one"], &repo, &xdg);
+
+    let output = run_wt_with_tty_stdin_and_path_and_shell(
+        &["select"],
+        &repo,
+        &xdg,
+        "2\n",
+        &path_with_git_only(&root),
+        &create_test_shell(&root),
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let combined = format!("{stdout}{stderr}");
+    let selected_path = repo.join(".worktrees/fallback-one");
+
+    assert!(combined.contains("Warning: fzf was not found in PATH."));
+    assert!(combined.contains("Select Worktree"));
+    assert!(combined.contains("1) main (*)"));
+    assert!(combined.contains("2) fallback-one"));
+    assert!(combined.contains("Choice:"));
+    assert!(combined.contains(&selected_path.to_string_lossy().to_string()));
+}
+
+#[cfg(unix)]
+#[test]
+fn select_without_fzf_prefers_exact_numeric_worktree_name() {
+    let root = temp_dir("interactive-select-numeric-name");
+    let repo = root.join("repo");
+    let xdg = root.join("xdg");
+    init_repo(&repo);
+    run_wt(&["init"], &repo, &xdg);
+    run_wt(&["add", "1"], &repo, &xdg);
+    run_wt(&["add", "other"], &repo, &xdg);
+
+    let output = run_wt_with_tty_stdin_and_path_and_shell(
+        &["select"],
+        &repo,
+        &xdg,
+        "1\n",
+        &path_with_git_only(&root),
+        &create_test_shell(&root),
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let combined = format!("{stdout}{stderr}");
+    let selected_path = repo.join(".worktrees/1");
+
+    assert!(combined.contains("Choice:"));
+    assert!(combined.contains(&selected_path.to_string_lossy().to_string()));
+    assert!(!combined.contains(&format!("\r\n{}\r\n", repo.display())));
+}
+
+#[test]
+fn select_without_fzf_preserves_non_interactive_listing() {
+    let root = temp_dir("non-interactive-select-no-fzf");
+    let repo = root.join("repo");
+    let xdg = root.join("xdg");
+    init_repo(&repo);
+    run_wt(&["init"], &repo, &xdg);
+    run_wt(&["add", "fallback-one"], &repo, &xdg);
+
+    let output =
+        run_wt_with_stdin_and_path(&["select"], &repo, &xdg, "", &path_with_git_only(&root));
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(stdout.contains("main"));
+    assert!(stdout.contains("fallback-one"));
+    assert!(!stderr.contains("Warning: fzf was not found in PATH."));
+    assert!(!stderr.contains("Choice:"));
 }
 
 #[test]

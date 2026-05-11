@@ -218,6 +218,11 @@ fn template(key: &str) -> (&'static str, &'static str) {
         ),
         "select_not_found" => ("Worktree not found: {}", "worktree が見つかりません: {}"),
         "select_no_last" => ("No previous selection found", "以前の選択が見つかりません"),
+        "select_worktree_header" => ("Select Worktree", "切り替える worktree を選択"),
+        "select_missing_fzf_warning" => (
+            "Warning: fzf was not found in PATH. Falling back to the numbered selector. Install fzf for fuzzy interactive selection.",
+            "警告: PATH に fzf が見つかりません。番号付きセレクターにフォールバックします。あいまい検索の対話選択を使うには fzf をインストールしてください。",
+        ),
         "prompt_worktree_name" => ("Worktree name: ", "作業名: "),
         "prompt_select_created" => (
             "Select the new worktree now? [Y/n]: ",
@@ -453,10 +458,37 @@ fn prompt_select_created_worktree() -> bool {
     }
 }
 
+fn worktrees_root_dir(base_dir: &Path) -> PathBuf {
+    let config = load_config(base_dir);
+    let worktrees_dir_name = config_get_str(&config, "worktrees_dir", ".worktrees");
+    if is_bare_repository(base_dir) {
+        let wt_home = require_wt_home_dir(base_dir);
+        let base_parent = wt_home.parent().unwrap_or_else(|| Path::new("."));
+        if worktrees_dir_name.is_empty() {
+            base_parent.to_path_buf()
+        } else {
+            base_parent.join(worktrees_dir_name)
+        }
+    } else {
+        base_dir.join(worktrees_dir_name)
+    }
+}
+
 fn worktree_display_name(base_dir: &Path, path: &Path) -> String {
     if same_path(path, base_dir) {
         "main".into()
     } else {
+        let root = path_resolve(&worktrees_root_dir(base_dir));
+        let resolved_path = path_resolve(path);
+        if let Ok(relative) = resolved_path.strip_prefix(&root) {
+            let components = relative
+                .components()
+                .map(|component| component.as_os_str().to_string_lossy().into_owned())
+                .collect::<Vec<_>>();
+            if !components.is_empty() {
+                return components.join("/");
+            }
+        }
         path.file_name()
             .unwrap_or_default()
             .to_string_lossy()
@@ -520,13 +552,13 @@ fn choose_worktree_interactively(
         if choice.is_empty() {
             return None;
         }
+        if names.iter().any(|name| name == &choice) {
+            return Some(choice);
+        }
         if let Ok(index) = choice.parse::<usize>() {
             if (1..=names.len()).contains(&index) {
                 return names.get(index - 1).cloned();
             }
-        }
-        if names.iter().any(|name| name == &choice) {
-            return Some(choice);
         }
         eprintln!("{}", m0("invalid_choice"));
     }
@@ -1504,6 +1536,9 @@ fn add_worktree(
     };
 
     let worktree_path = worktrees_dir.join(work_name);
+    if let Some(parent) = worktree_path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
     if worktree_path.exists() {
         fatal(m1("error", m1("already_exists", worktree_path.display())));
     }
@@ -1881,18 +1916,10 @@ fn cmd_add(args: &[String]) {
         let mut current_sel = env::var("WT_SESSION_NAME").ok();
         if current_sel.is_none() {
             if let Ok(cwd) = env::current_dir() {
-                let resolved_base = path_resolve(&base_dir);
                 for wt in get_worktree_info(&base_dir) {
                     let p = path_resolve(&wt.path);
                     if path_starts_with(&cwd, &p) {
-                        current_sel = Some(if p == resolved_base {
-                            "main".to_string()
-                        } else {
-                            p.file_name()
-                                .unwrap_or_default()
-                                .to_string_lossy()
-                                .into_owned()
-                        });
+                        current_sel = Some(worktree_display_name(&base_dir, &p));
                         break;
                     }
                 }
@@ -1994,7 +2021,8 @@ fn cmd_pr(args: &[String]) {
     let Some(base_dir) = find_base_dir() else {
         fatal(m1("error", m0("base_not_found")));
     };
-    if subcommand == "add" {
+
+    let pr_head_branch_name = || -> String {
         if which_cmd("gh").is_none() {
             fatal(m1("error", "GitHub CLI (gh) is required for this command"));
         }
@@ -2006,7 +2034,7 @@ fn cmd_pr(args: &[String]) {
                 "view".into(),
                 pr_number.clone(),
                 "--json".into(),
-                "number".into(),
+                "number,headRefName".into(),
             ],
             Some(&base_dir),
             false,
@@ -2018,8 +2046,27 @@ fn cmd_pr(args: &[String]) {
                 format!("PR #{pr_number} not found (or access denied)"),
             ));
         }
-        let branch_name = format!("pr-{pr_number}");
-        let worktree_name = format!("pr@{pr_number}");
+        let Ok(pr) = serde_json::from_str::<JsonValue>(&result.stdout) else {
+            fatal(m1(
+                "error",
+                format!("Could not parse GitHub CLI response for PR #{pr_number}"),
+            ));
+        };
+        pr.get("headRefName")
+            .and_then(JsonValue::as_str)
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| {
+                fatal(m1(
+                    "error",
+                    format!("Could not determine the head branch name for PR #{pr_number}"),
+                ))
+            })
+            .to_string()
+    };
+
+    if subcommand == "add" {
+        let branch_name = pr_head_branch_name();
+        let worktree_name = branch_name.clone();
         eprintln!("Fetching PR #{} contents...", pr_number);
         run_command(
             vec![
@@ -2041,7 +2088,7 @@ fn cmd_pr(args: &[String]) {
             false,
         );
     } else if subcommand == "co" {
-        cmd_checkout(&[format!("pr@{pr_number}")]);
+        cmd_checkout(&[pr_head_branch_name()]);
     } else {
         eprintln!("{}", m0("usage_pr"));
         std::process::exit(1);
@@ -2459,16 +2506,17 @@ fn resolve_clean_targets(
     targets
 }
 
-fn sort_worktrees(worktrees: &mut [WorktreeInfo], sort_key: &str, descending: bool) {
+fn sort_worktrees(
+    base_dir: &Path,
+    worktrees: &mut [WorktreeInfo],
+    sort_key: &str,
+    descending: bool,
+) {
     match sort_key {
         "last-commit" => worktrees.sort_by_key(|wt| wt.last_commit),
-        "name" => worktrees.sort_by_key(|wt| {
-            wt.path
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_lowercase()
-        }),
+        "name" => {
+            worktrees.sort_by_key(|wt| worktree_display_name(base_dir, &wt.path).to_lowercase())
+        }
         "branch" => worktrees.sort_by_key(|wt| wt.branch.to_lowercase()),
         _ => worktrees.sort_by_key(|wt| wt.created),
     }
@@ -2565,7 +2613,7 @@ fn cmd_list(args: &[String]) {
     if clean_all || clean_merged || clean_closed || days.is_some() {
         worktrees = resolve_clean_targets(&base_dir, &worktrees, args);
     }
-    sort_worktrees(&mut worktrees, &sort_key, descending);
+    sort_worktrees(&base_dir, &mut worktrees, &sort_key, descending);
 
     if show_pr {
         for wt in &mut worktrees {
@@ -2575,14 +2623,7 @@ fn cmd_list(args: &[String]) {
 
     if quiet {
         for wt in &worktrees {
-            if same_path(&wt.path, &base_dir) {
-                println!("main");
-            } else {
-                println!(
-                    "{}",
-                    wt.path.file_name().unwrap_or_default().to_string_lossy()
-                );
-            }
+            println!("{}", worktree_display_name(&base_dir, &wt.path));
         }
         return;
     }
@@ -2622,14 +2663,7 @@ fn cmd_list(args: &[String]) {
 
     let name_w = worktrees
         .iter()
-        .map(|wt| {
-            wt.path
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .chars()
-                .count()
-        })
+        .map(|wt| worktree_display_name(&base_dir, &wt.path).chars().count())
         .max()
         .unwrap_or(0)
         .max(m0("worktree_name").chars().count())
@@ -2688,12 +2722,7 @@ fn cmd_list(args: &[String]) {
 
     for (idx, wt) in worktrees.iter().enumerate() {
         let is_main = same_path(&wt.path, &base_dir);
-        let raw_name = wt
-            .path
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .into_owned();
+        let raw_name = worktree_display_name(&base_dir, &wt.path);
         let name_display = if is_main {
             format!("{cyan}(main){reset}")
         } else {
@@ -2731,15 +2760,7 @@ fn cmd_diff(args: &[String]) {
     let config = load_config(&base_dir);
     let mut name_map = HashMap::new();
     for wt in get_worktree_info(&base_dir) {
-        let name = if same_path(&wt.path, &base_dir) {
-            "main".into()
-        } else {
-            wt.path
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .into_owned()
-        };
+        let name = worktree_display_name(&base_dir, &wt.path);
         name_map.insert(name, wt.path);
     }
     let mut target_path: Option<PathBuf> = None;
@@ -2954,7 +2975,7 @@ fn cmd_remove(args: &[String]) {
             .unwrap_or_else(|| fatal(m1("error", m0("no_worktree_selected"))))
     };
     let target = get_worktree_info(&base_dir).into_iter().find(|wt| {
-        wt.path.file_name().is_some_and(|n| n == work_name.as_str())
+        worktree_display_name(&base_dir, &wt.path) == work_name
             || wt.path.to_string_lossy() == work_name
     });
     let Some(target) = target else {
@@ -2986,9 +3007,7 @@ fn cmd_checkout(args: &[String]) {
         fatal(m1("error", m0("base_not_found")));
     };
     for wt in get_worktree_info(&base_dir) {
-        if wt.path.file_name().is_some_and(|n| n == work_name.as_str())
-            || (same_path(&wt.path, &base_dir) && work_name == "main")
-        {
+        if worktree_display_name(&base_dir, &wt.path) == *work_name {
             println!("{}", wt.path.display());
             return;
         }
@@ -3002,19 +3021,7 @@ fn target_path_for_selection(base_dir: &Path, target: &str) -> PathBuf {
     if target == "main" {
         return base_dir.to_path_buf();
     }
-    let config = load_config(base_dir);
-    let worktrees_dir_name = config_get_str(&config, "worktrees_dir", ".worktrees");
-    if is_bare_repository(base_dir) {
-        let wt_home = require_wt_home_dir(base_dir);
-        let base_parent = wt_home.parent().unwrap_or_else(|| Path::new("."));
-        if worktrees_dir_name.is_empty() {
-            base_parent.join(target)
-        } else {
-            base_parent.join(worktrees_dir_name).join(target)
-        }
-    } else {
-        base_dir.join(worktrees_dir_name).join(target)
-    }
+    worktrees_root_dir(base_dir).join(target)
 }
 
 fn switch_selection(
@@ -3120,19 +3127,10 @@ fn cmd_select(args: &[String]) {
     let mut current_sel = env::var("WT_SESSION_NAME").ok();
     if current_sel.is_none() {
         if let Ok(cwd) = env::current_dir() {
-            let resolved_base = path_resolve(&base_dir);
             for wt in get_worktree_info(&base_dir) {
                 let wt_path = path_resolve(&wt.path);
                 if path_starts_with(&cwd, &wt_path) {
-                    current_sel = Some(if wt_path == resolved_base {
-                        "main".into()
-                    } else {
-                        wt_path
-                            .file_name()
-                            .unwrap_or_default()
-                            .to_string_lossy()
-                            .into_owned()
-                    });
+                    current_sel = Some(worktree_display_name(&base_dir, &wt_path));
                     break;
                 }
             }
@@ -3141,51 +3139,26 @@ fn cmd_select(args: &[String]) {
 
     let names = get_worktree_names(&base_dir);
     if args.is_empty() {
-        if which_cmd("fzf").is_some() && io::stdin().is_terminal() {
-            let mut fzf_input = String::new();
-            for name in &names {
-                if Some(name.as_str()) == current_sel.as_deref() {
-                    fzf_input.push_str(&format!("{name} (*)\n"));
-                } else {
-                    fzf_input.push_str(&format!("{name}\n"));
-                }
+        if io::stdin().is_terminal() {
+            if which_cmd("fzf").is_none() {
+                eprintln!("{}", m0("select_missing_fzf_warning"));
             }
-            let mut child = Command::new("fzf")
-                .args([
-                    "--height",
-                    "40%",
-                    "--reverse",
-                    "--header",
-                    "Select Worktree",
-                ])
-                .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
-                .spawn()
-                .unwrap_or_else(|err| fatal_error(err));
-            if let Some(stdin) = child.stdin.as_mut() {
-                let _ = stdin.write_all(fzf_input.as_bytes());
-            }
-            let output = child
-                .wait_with_output()
-                .unwrap_or_else(|err| fatal_error(err));
-            if output.status.success() {
-                let selected = String::from_utf8_lossy(&output.stdout)
-                    .split_whitespace()
-                    .next()
-                    .unwrap_or("")
-                    .to_string();
-                if !selected.is_empty() {
-                    switch_selection(
-                        &selected,
-                        &base_dir,
-                        current_sel.as_deref(),
-                        &last_sel_file,
-                        None,
-                    );
-                }
+            if let Some(selected) = choose_worktree_interactively(
+                &names,
+                &m0("select_worktree_header"),
+                current_sel.as_deref(),
+            ) {
+                switch_selection(
+                    &selected,
+                    &base_dir,
+                    current_sel.as_deref(),
+                    &last_sel_file,
+                    None,
+                );
             }
             return;
         }
+
         let yellow = "\x1b[33m";
         let reset = "\x1b[0m";
         let bold = "\x1b[1m";
@@ -3269,18 +3242,10 @@ fn cmd_current(_args: &[String]) {
     let Ok(cwd) = env::current_dir() else {
         return;
     };
-    let resolved_base = path_resolve(&base_dir);
     for wt in get_worktree_info(&base_dir) {
         let wt_path = path_resolve(&wt.path);
         if path_resolve(&cwd) == wt_path {
-            if wt_path == resolved_base {
-                println!("main");
-            } else {
-                println!(
-                    "{}",
-                    wt_path.file_name().unwrap_or_default().to_string_lossy()
-                );
-            }
+            println!("{}", worktree_display_name(&base_dir, &wt_path));
             return;
         }
     }
@@ -3300,11 +3265,7 @@ fn cmd_setup(_args: &[String]) {
     let work_name = if same_path(&target_path, &base_dir) {
         "main".to_string()
     } else {
-        target_path
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .into_owned()
+        worktree_display_name(&base_dir, &target_path)
     };
     let branch = run_command(
         vec!["git".into(), "branch".into(), "--show-current".into()],
@@ -3340,7 +3301,7 @@ fn cmd_clean(args: &[String]) {
             .unwrap_or_else(|| "N/A".into());
         eprintln!(
             "{} (reason: {}, created: {})",
-            wt.path.file_name().unwrap_or_default().to_string_lossy(),
+            worktree_display_name(&base_dir, &wt.path),
             wt.reason,
             created
         );
@@ -3361,7 +3322,7 @@ fn cmd_clean(args: &[String]) {
             "{}",
             m1(
                 "removing_worktree",
-                wt.path.file_name().unwrap_or_default().to_string_lossy()
+                worktree_display_name(&base_dir, &wt.path)
             )
         );
         let result = run_command(
@@ -3489,7 +3450,7 @@ fn show_help() {
             "add (ad) [<作業名> [<base_branch>]] [--skip-setup|--no-setup] [--select [<コマンド>...]]"
         );
         println!(
-            "  {:<55} - 作業ディレクトリを切り替え（fzf対応）",
+            "  {:<55} - 作業ディレクトリを切り替え（fzf対応、未導入時は番号選択）",
             "select (se, sl) [<作業名>|-] [<コマンド>...]"
         );
         println!(
@@ -3557,7 +3518,7 @@ fn show_help() {
             "add (ad) [<work_name> [<base_branch>]] [--skip-setup|--no-setup] [--select [<command>...]]"
         );
         println!(
-            "  {:<55} - Switch worktree selection (fzf support)",
+            "  {:<55} - Switch worktree selection (fzf or numbered fallback)",
             "select (se, sl) [<name>|-] [<command>...]"
         );
         println!(
@@ -3682,7 +3643,11 @@ fn cmd_doctor(_args: &[String]) {
     }
     for (label, cmd, note) in [
         ("GitHub CLI (gh)", "gh", "Optional"),
-        ("fzf", "fzf", "Optional, used for interactive selection"),
+        (
+            "fzf",
+            "fzf",
+            "Optional, used for fuzzy interactive selection; wt falls back to a numbered selector when unavailable",
+        ),
         ("GitUI", "gitui", "Optional, used for UI diffs"),
         ("Tig", "tig", "Optional, used for UI diffs"),
     ] {

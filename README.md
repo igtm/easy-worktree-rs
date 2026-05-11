@@ -6,7 +6,7 @@ Rust port of [`easy-worktree`](https://github.com/igtm/easy-worktree).
 
 ![easy-worktree-rs hero](./hero.png)
 
-`easy-worktree-rs` provides the `wt` command for managing Git worktrees with the same command surface as the Python package. The current version is `0.2.17`.
+`easy-worktree-rs` provides the `wt` command for managing Git worktrees with the same command surface as the Python package. The current version is `0.2.18`.
 
 ## Install
 
@@ -25,7 +25,7 @@ curl -fsSL https://raw.githubusercontent.com/igtm/easy-worktree-rs/main/install.
 Install a specific release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/igtm/easy-worktree-rs/main/install.sh | sh -s -- -v=v0.2.17
+curl -fsSL https://raw.githubusercontent.com/igtm/easy-worktree-rs/main/install.sh | sh -s -- -v=v0.2.18
 ```
 
 Install from GitHub with Cargo:
@@ -134,6 +134,19 @@ Remove a worktree interactively:
 
 ```bash
 wt rm
+```
+
+Interactively select a worktree (`fzf` when available, otherwise a numbered prompt):
+
+```bash
+wt select
+```
+
+Create a worktree from a PR using the PR head branch name:
+
+```bash
+wt pr add 123
+wt pr co 123
 ```
 
 ## Performance
