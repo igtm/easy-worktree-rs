@@ -74,6 +74,12 @@ struct WorktreeInfo {
     reason: String,
 }
 
+#[derive(Debug, Clone)]
+struct NamedWorktree {
+    name: String,
+    path: PathBuf,
+}
+
 #[cfg_attr(not(windows), allow(dead_code))]
 #[derive(Debug, Clone, Copy)]
 enum ShellMode {
@@ -474,13 +480,12 @@ fn worktrees_root_dir(base_dir: &Path) -> PathBuf {
     }
 }
 
-fn worktree_display_name(base_dir: &Path, path: &Path) -> String {
+fn worktree_display_name_with_root(base_dir: &Path, worktrees_root: &Path, path: &Path) -> String {
     if same_path(path, base_dir) {
         "main".into()
     } else {
-        let root = path_resolve(&worktrees_root_dir(base_dir));
         let resolved_path = path_resolve(path);
-        if let Ok(relative) = resolved_path.strip_prefix(&root) {
+        if let Ok(relative) = resolved_path.strip_prefix(worktrees_root) {
             let components = relative
                 .components()
                 .map(|component| component.as_os_str().to_string_lossy().into_owned())
@@ -494,6 +499,37 @@ fn worktree_display_name(base_dir: &Path, path: &Path) -> String {
             .to_string_lossy()
             .into_owned()
     }
+}
+
+fn worktree_display_name(base_dir: &Path, path: &Path) -> String {
+    let worktrees_root = path_resolve(&worktrees_root_dir(base_dir));
+    worktree_display_name_with_root(base_dir, &worktrees_root, path)
+}
+
+fn get_named_worktrees(base_dir: &Path) -> Vec<NamedWorktree> {
+    let worktrees_root = path_resolve(&worktrees_root_dir(base_dir));
+    get_worktree_entries(base_dir)
+        .into_iter()
+        .map(|entry| NamedWorktree {
+            name: worktree_display_name_with_root(base_dir, &worktrees_root, &entry.path),
+            path: entry.path,
+        })
+        .collect()
+}
+
+fn current_selection_name(base_dir: &Path, cwd: &Path) -> Option<String> {
+    let worktrees_root = path_resolve(&worktrees_root_dir(base_dir));
+    for entry in get_worktree_entries(base_dir) {
+        let wt_path = path_resolve(&entry.path);
+        if path_starts_with(cwd, &wt_path) {
+            return Some(worktree_display_name_with_root(
+                base_dir,
+                &worktrees_root,
+                &wt_path,
+            ));
+        }
+    }
+    None
 }
 
 fn choose_worktree_interactively(
@@ -1916,13 +1952,7 @@ fn cmd_add(args: &[String]) {
         let mut current_sel = env::var("WT_SESSION_NAME").ok();
         if current_sel.is_none() {
             if let Ok(cwd) = env::current_dir() {
-                for wt in get_worktree_info(&base_dir) {
-                    let p = path_resolve(&wt.path);
-                    if path_starts_with(&cwd, &p) {
-                        current_sel = Some(worktree_display_name(&base_dir, &p));
-                        break;
-                    }
-                }
+                current_sel = current_selection_name(&base_dir, &cwd);
             }
         }
         let _ = wt_path;
@@ -2526,9 +2556,9 @@ fn sort_worktrees(
 }
 
 fn get_worktree_names(base_dir: &Path) -> Vec<String> {
-    get_worktree_info(base_dir)
+    get_named_worktrees(base_dir)
         .into_iter()
-        .map(|wt| worktree_display_name(base_dir, &wt.path))
+        .map(|wt| wt.name)
         .collect()
 }
 
@@ -2551,8 +2581,7 @@ fn levenshtein(a: &str, b: &str) -> usize {
     *costs.last().unwrap_or(&0)
 }
 
-fn suggest_worktree_name(base_dir: &Path, typed_name: &str) {
-    let names = get_worktree_names(base_dir);
+fn suggest_worktree_name_from_names(names: &[String], typed_name: &str) {
     if names.is_empty() {
         return;
     }
@@ -2575,6 +2604,11 @@ fn suggest_worktree_name(base_dir: &Path, typed_name: &str) {
             .collect::<Vec<_>>();
         eprintln!("{}", m1("did_you_mean", matches.join(", ")));
     }
+}
+
+fn suggest_worktree_name(base_dir: &Path, typed_name: &str) {
+    let names = get_worktree_names(base_dir);
+    suggest_worktree_name_from_names(&names, typed_name);
 }
 
 fn cmd_list(args: &[String]) {
@@ -2759,9 +2793,8 @@ fn cmd_diff(args: &[String]) {
     };
     let config = load_config(&base_dir);
     let mut name_map = HashMap::new();
-    for wt in get_worktree_info(&base_dir) {
-        let name = worktree_display_name(&base_dir, &wt.path);
-        name_map.insert(name, wt.path);
+    for wt in get_named_worktrees(&base_dir) {
+        name_map.insert(wt.name, wt.path);
     }
     let mut target_path: Option<PathBuf> = None;
     let mut remaining_args = Vec::new();
@@ -2951,6 +2984,14 @@ fn cmd_remove(args: &[String]) {
     let Some(base_dir) = find_base_dir() else {
         fatal(m1("error", m0("base_not_found")));
     };
+    let removable_worktrees = get_named_worktrees(&base_dir)
+        .into_iter()
+        .filter(|wt| !same_path(&wt.path, &base_dir))
+        .collect::<Vec<_>>();
+    let removable_names = removable_worktrees
+        .iter()
+        .map(|wt| wt.name.clone())
+        .collect::<Vec<_>>();
     let mut flags = Vec::new();
     let mut work_name: Option<String> = None;
     for arg in args {
@@ -2963,24 +3004,18 @@ fn cmd_remove(args: &[String]) {
     let work_name = if let Some(work_name) = work_name {
         work_name
     } else {
-        let names = get_worktree_info(&base_dir)
-            .into_iter()
-            .filter(|wt| !same_path(&wt.path, &base_dir))
-            .map(|wt| worktree_display_name(&base_dir, &wt.path))
-            .collect::<Vec<_>>();
-        if names.is_empty() {
+        if removable_names.is_empty() {
             fatal(m1("error", m0("no_removable_worktrees")));
         }
-        choose_worktree_interactively(&names, &m0("select_worktree_to_remove"), None)
+        choose_worktree_interactively(&removable_names, &m0("select_worktree_to_remove"), None)
             .unwrap_or_else(|| fatal(m1("error", m0("no_worktree_selected"))))
     };
-    let target = get_worktree_info(&base_dir).into_iter().find(|wt| {
-        worktree_display_name(&base_dir, &wt.path) == work_name
-            || wt.path.to_string_lossy() == work_name
-    });
+    let target = removable_worktrees
+        .into_iter()
+        .find(|wt| wt.name == work_name || wt.path.to_string_lossy() == work_name);
     let Some(target) = target else {
         eprintln!("{}", m1("error", m1("select_not_found", &work_name)));
-        suggest_worktree_name(&base_dir, &work_name);
+        suggest_worktree_name_from_names(&removable_names, &work_name);
         std::process::exit(1);
     };
     eprintln!("{}", m1("removing_worktree", &work_name));
@@ -3006,8 +3041,8 @@ fn cmd_checkout(args: &[String]) {
     let Some(base_dir) = find_base_dir() else {
         fatal(m1("error", m0("base_not_found")));
     };
-    for wt in get_worktree_info(&base_dir) {
-        if worktree_display_name(&base_dir, &wt.path) == *work_name {
+    for wt in get_named_worktrees(&base_dir) {
+        if wt.name == *work_name {
             println!("{}", wt.path.display());
             return;
         }
@@ -3127,13 +3162,7 @@ fn cmd_select(args: &[String]) {
     let mut current_sel = env::var("WT_SESSION_NAME").ok();
     if current_sel.is_none() {
         if let Ok(cwd) = env::current_dir() {
-            for wt in get_worktree_info(&base_dir) {
-                let wt_path = path_resolve(&wt.path);
-                if path_starts_with(&cwd, &wt_path) {
-                    current_sel = Some(worktree_display_name(&base_dir, &wt_path));
-                    break;
-                }
-            }
+            current_sel = current_selection_name(&base_dir, &cwd);
         }
     }
 
@@ -3242,10 +3271,10 @@ fn cmd_current(_args: &[String]) {
     let Ok(cwd) = env::current_dir() else {
         return;
     };
-    for wt in get_worktree_info(&base_dir) {
+    for wt in get_named_worktrees(&base_dir) {
         let wt_path = path_resolve(&wt.path);
         if path_resolve(&cwd) == wt_path {
-            println!("{}", worktree_display_name(&base_dir, &wt_path));
+            println!("{}", wt.name);
             return;
         }
     }

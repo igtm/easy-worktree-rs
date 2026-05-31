@@ -248,6 +248,20 @@ fn path_with_git_and_script(root: &Path, name: &str, content: &str) -> PathBuf {
 }
 
 #[cfg(unix)]
+fn path_with_logging_git(root: &Path, log_file: &Path) -> PathBuf {
+    let bin_dir = root.join("git-logging-bin");
+    fs::create_dir_all(&bin_dir).unwrap();
+    let git_path = find_cmd_path("git");
+    let script = format!(
+        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> {}\nexec {} \"$@\"\n",
+        shell_quote(&log_file.display().to_string()),
+        shell_quote(&git_path.display().to_string())
+    );
+    write_executable_script(&bin_dir.join("git"), &script);
+    bin_dir
+}
+
+#[cfg(unix)]
 fn create_test_shell(root: &Path) -> PathBuf {
     let shell = root.join("test-shell.sh");
     write_executable_script(&shell, "#!/bin/sh\npwd\n");
@@ -439,6 +453,34 @@ fn rm_without_name_prompts_for_worktree() {
     assert!(stderr.contains("Select Worktree to Remove"));
     assert!(!remove_path.exists());
     assert!(keep_path.exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn rm_avoids_full_worktree_status_scans() {
+    let root = temp_dir("rm-fast");
+    let repo = root.join("repo");
+    let xdg = root.join("xdg");
+    init_repo(&repo);
+    run_wt(&["init"], &repo, &xdg);
+    run_wt(&["add", "remove-me"], &repo, &xdg);
+    run_wt(&["add", "keep-me"], &repo, &xdg);
+
+    let log_file = root.join("git.log");
+    let path = path_with_logging_git(&root, &log_file);
+    run_wt_with_path(&["rm", "--force", "remove-me"], &repo, &xdg, &path);
+
+    let log = fs::read_to_string(&log_file).unwrap();
+    assert_eq!(
+        log.lines()
+            .filter(|line| *line == "worktree list --porcelain")
+            .count(),
+        1
+    );
+    assert!(log.contains("worktree remove --force"));
+    assert!(!log.contains("status --porcelain"));
+    assert!(!log.contains("diff HEAD --shortstat"));
+    assert!(!log.contains("log -1 --format=%ct"));
 }
 
 #[cfg(unix)]
