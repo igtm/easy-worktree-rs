@@ -55,6 +55,7 @@ struct CmdResult {
 #[derive(Debug, Clone)]
 struct WorktreeEntry {
     path: PathBuf,
+    head: Option<String>,
     branch: Option<String>,
     is_bare: bool,
 }
@@ -76,8 +77,9 @@ struct WorktreeInfo {
 
 #[derive(Debug, Clone)]
 struct NamedWorktree {
-    name: String,
     path: PathBuf,
+    branch: String,
+    name: String,
 }
 
 #[cfg_attr(not(windows), allow(dead_code))]
@@ -464,9 +466,7 @@ fn prompt_select_created_worktree() -> bool {
     }
 }
 
-fn worktrees_root_dir(base_dir: &Path) -> PathBuf {
-    let config = load_config(base_dir);
-    let worktrees_dir_name = config_get_str(&config, "worktrees_dir", ".worktrees");
+fn worktrees_root_dir_from_name(base_dir: &Path, worktrees_dir_name: &str) -> PathBuf {
     if is_bare_repository(base_dir) {
         let wt_home = require_wt_home_dir(base_dir);
         let base_parent = wt_home.parent().unwrap_or_else(|| Path::new("."));
@@ -480,12 +480,19 @@ fn worktrees_root_dir(base_dir: &Path) -> PathBuf {
     }
 }
 
+fn worktrees_root_dir(base_dir: &Path) -> PathBuf {
+    let config = load_config(base_dir);
+    let worktrees_dir_name = config_get_str(&config, "worktrees_dir", ".worktrees");
+    worktrees_root_dir_from_name(base_dir, &worktrees_dir_name)
+}
+
 fn worktree_display_name_with_root(base_dir: &Path, worktrees_root: &Path, path: &Path) -> String {
     if same_path(path, base_dir) {
         "main".into()
     } else {
+        let resolved_root = path_resolve(worktrees_root);
         let resolved_path = path_resolve(path);
-        if let Ok(relative) = resolved_path.strip_prefix(worktrees_root) {
+        if let Ok(relative) = resolved_path.strip_prefix(&resolved_root) {
             let components = relative
                 .components()
                 .map(|component| component.as_os_str().to_string_lossy().into_owned())
@@ -502,34 +509,7 @@ fn worktree_display_name_with_root(base_dir: &Path, worktrees_root: &Path, path:
 }
 
 fn worktree_display_name(base_dir: &Path, path: &Path) -> String {
-    let worktrees_root = path_resolve(&worktrees_root_dir(base_dir));
-    worktree_display_name_with_root(base_dir, &worktrees_root, path)
-}
-
-fn get_named_worktrees(base_dir: &Path) -> Vec<NamedWorktree> {
-    let worktrees_root = path_resolve(&worktrees_root_dir(base_dir));
-    get_worktree_entries(base_dir)
-        .into_iter()
-        .map(|entry| NamedWorktree {
-            name: worktree_display_name_with_root(base_dir, &worktrees_root, &entry.path),
-            path: entry.path,
-        })
-        .collect()
-}
-
-fn current_selection_name(base_dir: &Path, cwd: &Path) -> Option<String> {
-    let worktrees_root = path_resolve(&worktrees_root_dir(base_dir));
-    for entry in get_worktree_entries(base_dir) {
-        let wt_path = path_resolve(&entry.path);
-        if path_starts_with(cwd, &wt_path) {
-            return Some(worktree_display_name_with_root(
-                base_dir,
-                &worktrees_root,
-                &wt_path,
-            ));
-        }
-    }
-    None
+    worktree_display_name_with_root(base_dir, &worktrees_root_dir(base_dir), path)
 }
 
 fn choose_worktree_interactively(
@@ -774,6 +754,7 @@ fn get_worktree_entries(base_dir: &Path) -> Vec<WorktreeEntry> {
     );
     let mut entries = Vec::new();
     let mut path: Option<PathBuf> = None;
+    let mut head: Option<String> = None;
     let mut branch: Option<String> = None;
     let mut is_bare = false;
 
@@ -782,6 +763,7 @@ fn get_worktree_entries(base_dir: &Path) -> Vec<WorktreeEntry> {
             if let Some(path) = path.take() {
                 entries.push(WorktreeEntry {
                     path,
+                    head: head.take(),
                     branch: branch.take(),
                     is_bare,
                 });
@@ -791,13 +773,31 @@ fn get_worktree_entries(base_dir: &Path) -> Vec<WorktreeEntry> {
         }
         if let Some(rest) = line.strip_prefix("worktree ") {
             path = Some(PathBuf::from(rest));
+        } else if let Some(rest) = line.strip_prefix("HEAD ") {
+            head = Some(rest.to_string());
         } else if let Some(rest) = line.strip_prefix("branch ") {
             branch = Some(rest.strip_prefix("refs/heads/").unwrap_or(rest).to_string());
         } else if line.trim() == "bare" {
             is_bare = true;
+        } else if line.starts_with("detached") {
+            branch = Some("DETACHED".into());
         }
     }
     entries
+}
+
+fn get_named_worktrees(base_dir: &Path) -> Vec<NamedWorktree> {
+    let config = load_config(base_dir);
+    let worktrees_dir_name = config_get_str(&config, "worktrees_dir", ".worktrees");
+    let worktrees_root = worktrees_root_dir_from_name(base_dir, &worktrees_dir_name);
+    get_worktree_entries(base_dir)
+        .into_iter()
+        .map(|entry| NamedWorktree {
+            name: worktree_display_name_with_root(base_dir, &worktrees_root, &entry.path),
+            path: entry.path,
+            branch: entry.branch.unwrap_or_else(|| "N/A".into()),
+        })
+        .collect()
 }
 
 fn get_default_branch(base_dir: &Path) -> Option<String> {
@@ -1212,23 +1212,82 @@ fn record_worktree_created(
     save_worktree_metadata(base_dir, &metadata);
 }
 
-fn get_recorded_worktree_created(base_dir: &Path, worktree_path: &Path) -> Option<NaiveDateTime> {
-    let metadata = load_worktree_metadata(base_dir);
-    let target = path_resolve(worktree_path).to_string_lossy().into_owned();
-    for item in metadata
+fn worktree_created_map(metadata: &TomlValue) -> HashMap<String, NaiveDateTime> {
+    metadata
         .get("worktrees")
         .and_then(TomlValue::as_array)
         .into_iter()
         .flatten()
-    {
-        if item.get("path").and_then(TomlValue::as_str) == Some(target.as_str()) {
-            return item
+        .filter_map(|item| {
+            let path = item.get("path").and_then(TomlValue::as_str)?;
+            let created = item
                 .get("created_at")
                 .and_then(TomlValue::as_str)
-                .and_then(parse_datetime);
+                .and_then(parse_datetime)?;
+            Some((path.to_string(), created))
+        })
+        .collect()
+}
+
+fn collect_worktree_created_times(
+    base_dir: &Path,
+    paths: &[PathBuf],
+) -> HashMap<String, Option<NaiveDateTime>> {
+    let mut metadata = load_worktree_metadata(base_dir);
+    let mut created_map = worktree_created_map(&metadata);
+    let mut changed = false;
+
+    let items = metadata
+        .as_table_mut()
+        .and_then(|table| table.get_mut("worktrees"))
+        .and_then(TomlValue::as_array_mut)
+        .expect("worktrees metadata should be an array");
+
+    for path in paths {
+        let target = path_resolve(path).to_string_lossy().into_owned();
+        let mut created = created_map.get(&target).copied();
+        if created.is_none() && path.exists() {
+            if let Ok(metadata) = fs::metadata(path) {
+                let sys_time = metadata.created().or_else(|_| metadata.modified()).ok();
+                if let Some(sys_time) = sys_time {
+                    let dt: DateTime<Local> = sys_time.into();
+                    let created_at = dt.naive_local();
+                    created = Some(created_at);
+                    created_map.insert(target.clone(), created_at);
+                    let created_value = created_at.format("%Y-%m-%dT%H:%M:%S%.6f").to_string();
+                    if let Some(item) = items.iter_mut().find(|item| {
+                        item.get("path").and_then(TomlValue::as_str) == Some(target.as_str())
+                    }) {
+                        if item.get("created_at").is_none() {
+                            if let Some(table) = item.as_table_mut() {
+                                table.insert("created_at".into(), TomlValue::String(created_value));
+                                changed = true;
+                            }
+                        }
+                    } else {
+                        let mut item = TomlMap::new();
+                        item.insert("path".into(), TomlValue::String(target.clone()));
+                        item.insert("created_at".into(), TomlValue::String(created_value));
+                        items.push(TomlValue::Table(item));
+                        changed = true;
+                    }
+                }
+            }
         }
     }
-    None
+
+    if changed {
+        save_worktree_metadata(base_dir, &metadata);
+    }
+
+    paths
+        .iter()
+        .map(|path| {
+            let target = path_resolve(path).to_string_lossy().into_owned();
+            let created = created_map.get(&target).copied();
+            (target, created)
+        })
+        .collect()
 }
 
 fn remove_worktree_metadata(base_dir: &Path, worktree_path: &Path) {
@@ -1952,7 +2011,14 @@ fn cmd_add(args: &[String]) {
         let mut current_sel = env::var("WT_SESSION_NAME").ok();
         if current_sel.is_none() {
             if let Ok(cwd) = env::current_dir() {
-                current_sel = current_selection_name(&base_dir, &cwd);
+                let cwd = path_resolve(&cwd);
+                for wt in get_named_worktrees(&base_dir) {
+                    let p = path_resolve(&wt.path);
+                    if path_starts_with(&cwd, &p) {
+                        current_sel = Some(wt.name);
+                        break;
+                    }
+                }
             }
         }
         let _ = wt_path;
@@ -2125,87 +2191,73 @@ fn cmd_pr(args: &[String]) {
     }
 }
 
-fn get_worktree_info(base_dir: &Path) -> Vec<WorktreeInfo> {
-    let result = run_command(
-        vec![
-            "git".into(),
-            "worktree".into(),
-            "list".into(),
-            "--porcelain".into(),
-        ],
-        Some(base_dir),
-        true,
-        true,
-    );
-    let mut worktrees = Vec::new();
-    let mut current_path: Option<PathBuf> = None;
-    let mut current_head: Option<String> = None;
-    let mut current_branch: Option<String> = None;
-
-    for line in result.stdout.lines().chain(std::iter::once("")) {
-        if line.is_empty() {
-            if let Some(path) = current_path.take() {
-                worktrees.push(WorktreeInfo {
-                    path,
-                    head: current_head.take(),
-                    branch: current_branch.take().unwrap_or_else(|| "N/A".into()),
-                    created: None,
-                    last_commit: None,
-                    is_clean: false,
-                    has_untracked: false,
-                    insertions: 0,
-                    deletions: 0,
-                    pr_info: String::new(),
-                    reason: String::new(),
-                });
-            }
-            continue;
-        }
-        if let Some(rest) = line.strip_prefix("worktree ") {
-            current_path = Some(PathBuf::from(rest));
-        } else if let Some(rest) = line.strip_prefix("HEAD ") {
-            current_head = Some(rest.to_string());
-        } else if let Some(rest) = line.strip_prefix("branch ") {
-            current_branch = Some(rest.strip_prefix("refs/heads/").unwrap_or(rest).to_string());
-        } else if line.starts_with("detached") {
-            current_branch = Some("DETACHED".into());
-        }
+fn get_last_commit_times(base_dir: &Path, heads: &[String]) -> HashMap<String, NaiveDateTime> {
+    if heads.is_empty() {
+        return HashMap::new();
     }
 
-    for wt in &mut worktrees {
-        let mut created = get_recorded_worktree_created(base_dir, &wt.path);
-        if created.is_none() && wt.path.exists() {
-            if let Ok(metadata) = fs::metadata(&wt.path) {
-                let sys_time = metadata.created().or_else(|_| metadata.modified()).ok();
-                if let Some(sys_time) = sys_time {
-                    let dt: DateTime<Local> = sys_time.into();
-                    created = Some(dt.naive_local());
-                    record_worktree_created(base_dir, &wt.path, created);
-                }
-            }
-        }
-        wt.created = created;
+    let mut cmd = vec![
+        "git".into(),
+        "show".into(),
+        "-s".into(),
+        "--format=%H %ct".into(),
+    ];
+    cmd.extend(heads.iter().cloned());
+    let result = run_command(cmd, Some(base_dir), false, true);
+    if result.status != 0 {
+        return HashMap::new();
+    }
 
-        let head = wt.head.clone().unwrap_or_else(|| "HEAD".into());
-        let log = run_command(
-            vec![
-                "git".into(),
-                "log".into(),
-                "-1".into(),
-                "--format=%ct".into(),
-                head,
-            ],
-            Some(base_dir),
-            false,
-            true,
-        );
-        if log.status == 0 {
-            if let Ok(ts) = log.stdout.trim().parse::<i64>() {
-                wt.last_commit = Local
-                    .timestamp_opt(ts, 0)
-                    .single()
-                    .map(|dt| dt.naive_local());
-            }
+    result
+        .stdout
+        .lines()
+        .filter_map(|line| {
+            let mut parts = line.split_whitespace();
+            let head = parts.next()?;
+            let ts = parts.next()?.parse::<i64>().ok()?;
+            let dt = Local.timestamp_opt(ts, 0).single()?.naive_local();
+            Some((head.to_string(), dt))
+        })
+        .collect()
+}
+
+fn get_worktree_info(base_dir: &Path) -> Vec<WorktreeInfo> {
+    let entries = get_worktree_entries(base_dir);
+    let mut worktrees = entries
+        .into_iter()
+        .map(|entry| WorktreeInfo {
+            path: entry.path,
+            head: entry.head,
+            branch: entry.branch.unwrap_or_else(|| "N/A".into()),
+            created: None,
+            last_commit: None,
+            is_clean: false,
+            has_untracked: false,
+            insertions: 0,
+            deletions: 0,
+            pr_info: String::new(),
+            reason: String::new(),
+        })
+        .collect::<Vec<_>>();
+
+    let paths = worktrees
+        .iter()
+        .map(|wt| wt.path.clone())
+        .collect::<Vec<_>>();
+    let created_times = collect_worktree_created_times(base_dir, &paths);
+    for wt in &mut worktrees {
+        let target = path_resolve(&wt.path).to_string_lossy().into_owned();
+        wt.created = created_times.get(&target).copied().flatten();
+    }
+
+    let heads = worktrees
+        .iter()
+        .filter_map(|wt| wt.head.clone())
+        .collect::<Vec<_>>();
+    let last_commit_times = get_last_commit_times(base_dir, &heads);
+    for wt in &mut worktrees {
+        if let Some(head) = &wt.head {
+            wt.last_commit = last_commit_times.get(head).copied();
         }
 
         let status = run_command(
@@ -2542,11 +2594,12 @@ fn sort_worktrees(
     sort_key: &str,
     descending: bool,
 ) {
+    let worktrees_root = worktrees_root_dir(base_dir);
     match sort_key {
         "last-commit" => worktrees.sort_by_key(|wt| wt.last_commit),
-        "name" => {
-            worktrees.sort_by_key(|wt| worktree_display_name(base_dir, &wt.path).to_lowercase())
-        }
+        "name" => worktrees.sort_by_key(|wt| {
+            worktree_display_name_with_root(base_dir, &worktrees_root, &wt.path).to_lowercase()
+        }),
         "branch" => worktrees.sort_by_key(|wt| wt.branch.to_lowercase()),
         _ => worktrees.sort_by_key(|wt| wt.created),
     }
@@ -2642,8 +2695,41 @@ fn cmd_list(args: &[String]) {
         descending = true;
     }
 
-    let mut worktrees = get_worktree_info(&base_dir);
     let (clean_all, clean_merged, clean_closed, days) = parse_clean_filter_options(args);
+    if quiet
+        && !show_pr
+        && !clean_all
+        && !clean_merged
+        && !clean_closed
+        && days.is_none()
+        && sort_key != "last-commit"
+    {
+        let mut worktrees = get_named_worktrees(&base_dir);
+        match sort_key.as_str() {
+            "name" => worktrees.sort_by_key(|wt| wt.name.to_lowercase()),
+            "branch" => worktrees.sort_by_key(|wt| wt.branch.to_lowercase()),
+            _ => {
+                let paths = worktrees
+                    .iter()
+                    .map(|wt| wt.path.clone())
+                    .collect::<Vec<_>>();
+                let created_times = collect_worktree_created_times(&base_dir, &paths);
+                worktrees.sort_by_key(|wt| {
+                    let target = path_resolve(&wt.path).to_string_lossy().into_owned();
+                    created_times.get(&target).copied().flatten()
+                });
+            }
+        }
+        if descending {
+            worktrees.reverse();
+        }
+        for wt in worktrees {
+            println!("{}", wt.name);
+        }
+        return;
+    }
+
+    let mut worktrees = get_worktree_info(&base_dir);
     if clean_all || clean_merged || clean_closed || days.is_some() {
         worktrees = resolve_clean_targets(&base_dir, &worktrees, args);
     }
@@ -2655,9 +2741,15 @@ fn cmd_list(args: &[String]) {
         }
     }
 
+    let worktrees_root = worktrees_root_dir(&base_dir);
+    let worktree_names = worktrees
+        .iter()
+        .map(|wt| worktree_display_name_with_root(&base_dir, &worktrees_root, &wt.path))
+        .collect::<Vec<_>>();
+
     if quiet {
-        for wt in &worktrees {
-            println!("{}", worktree_display_name(&base_dir, &wt.path));
+        for name in &worktree_names {
+            println!("{name}");
         }
         return;
     }
@@ -2695,9 +2787,9 @@ fn cmd_list(args: &[String]) {
         }
     }
 
-    let name_w = worktrees
+    let name_w = worktree_names
         .iter()
-        .map(|wt| worktree_display_name(&base_dir, &wt.path).chars().count())
+        .map(|name| name.chars().count())
         .max()
         .unwrap_or(0)
         .max(m0("worktree_name").chars().count())
@@ -2756,7 +2848,7 @@ fn cmd_list(args: &[String]) {
 
     for (idx, wt) in worktrees.iter().enumerate() {
         let is_main = same_path(&wt.path, &base_dir);
-        let raw_name = worktree_display_name(&base_dir, &wt.path);
+        let raw_name = worktree_names[idx].clone();
         let name_display = if is_main {
             format!("{cyan}(main){reset}")
         } else {
@@ -3159,14 +3251,25 @@ fn cmd_select(args: &[String]) {
     create_hook_template(&base_dir);
     let wt_dir = get_wt_dir(&base_dir);
     let last_sel_file = wt_dir.join("last_selection");
+    let named_worktrees = get_named_worktrees(&base_dir);
     let mut current_sel = env::var("WT_SESSION_NAME").ok();
     if current_sel.is_none() {
         if let Ok(cwd) = env::current_dir() {
-            current_sel = current_selection_name(&base_dir, &cwd);
+            let cwd = path_resolve(&cwd);
+            for wt in &named_worktrees {
+                let wt_path = path_resolve(&wt.path);
+                if path_starts_with(&cwd, &wt_path) {
+                    current_sel = Some(wt.name.clone());
+                    break;
+                }
+            }
         }
     }
 
-    let names = get_worktree_names(&base_dir);
+    let names = named_worktrees
+        .iter()
+        .map(|wt| wt.name.clone())
+        .collect::<Vec<_>>();
     if args.is_empty() {
         if io::stdin().is_terminal() {
             if which_cmd("fzf").is_none() {
