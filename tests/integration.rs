@@ -415,6 +415,28 @@ fn slash_worktree_names_are_preserved_across_commands() {
 }
 
 #[test]
+fn list_marks_missing_worktrees_without_failing() {
+    let root = temp_dir("missing-worktree-list");
+    let repo = root.join("repo");
+    let xdg = root.join("xdg");
+    init_repo(&repo);
+    run_wt(&["init"], &repo, &xdg);
+    run_wt(&["add", "keep-me"], &repo, &xdg);
+    run_wt(&["add", "gone-away"], &repo, &xdg);
+
+    let keep_path = repo.join(".worktrees/keep-me");
+    let missing_path = repo.join(".worktrees/gone-away");
+    assert!(keep_path.exists());
+    fs::remove_dir_all(&missing_path).unwrap();
+
+    let output = run_wt(&["list"], &repo, &xdg);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("keep-me"));
+    assert!(stdout.contains("gone-away"));
+    assert!(stdout.contains("missing"));
+}
+
+#[test]
 fn add_without_name_prompts_and_can_select_created_worktree() {
     let root = temp_dir("interactive-add");
     let repo = root.join("repo");

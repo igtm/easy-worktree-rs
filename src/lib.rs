@@ -357,7 +357,16 @@ fn run_command(
 
     let output = match command.output() {
         Ok(output) => output,
-        Err(err) => fatal_error(err),
+        Err(err) => {
+            if check {
+                fatal_error(err);
+            }
+            return CmdResult {
+                stdout: String::new(),
+                stderr: err.to_string(),
+                status: 1,
+            };
+        }
     };
     let result = CmdResult {
         stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
@@ -2260,12 +2269,21 @@ fn get_worktree_info(base_dir: &Path) -> Vec<WorktreeInfo> {
             wt.last_commit = last_commit_times.get(head).copied();
         }
 
+        if !wt.path.exists() {
+            wt.reason = "missing".into();
+            continue;
+        }
+
         let status = run_command(
             vec!["git".into(), "status".into(), "--porcelain".into()],
             Some(&wt.path),
             false,
             false,
         );
+        if status.status != 0 {
+            wt.reason = "error".into();
+            continue;
+        }
         wt.is_clean = status.status == 0 && status.stdout.trim().is_empty();
         wt.has_untracked = status.stdout.contains("??");
 
@@ -2284,6 +2302,8 @@ fn get_worktree_info(base_dir: &Path) -> Vec<WorktreeInfo> {
             let out = diff.stdout.trim();
             wt.insertions = parse_shortstat_count(out, "insertion");
             wt.deletions = parse_shortstat_count(out, "deletion");
+        } else if wt.reason.is_empty() {
+            wt.reason = "error".into();
         }
     }
     worktrees
@@ -2766,6 +2786,10 @@ fn cmd_list(args: &[String]) {
     for (idx, wt) in worktrees.iter().enumerate() {
         let mut parts = Vec::new();
         let mut clean_parts = Vec::new();
+        if !wt.reason.is_empty() {
+            parts.push(format!("{red}{}{reset}", wt.reason));
+            clean_parts.push(wt.reason.clone());
+        }
         if wt.insertions > 0 {
             parts.push(format!("{green}+{}{reset}", wt.insertions));
             clean_parts.push(format!("+{}", wt.insertions));
