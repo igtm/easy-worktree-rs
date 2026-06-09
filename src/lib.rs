@@ -2353,35 +2353,11 @@ fn get_relative_time(dt: Option<NaiveDateTime>) -> String {
     format!("{}y ago", days / 365)
 }
 
-fn get_pr_info(branch: &str, cwd: &Path) -> String {
-    if branch.is_empty() || branch == "HEAD" || branch == "DETACHED" || which_cmd("gh").is_none() {
-        return String::new();
-    }
-    let result = run_command(
-        vec![
-            "gh".into(),
-            "pr".into(),
-            "list".into(),
-            "--head".into(),
-            branch.into(),
-            "--state".into(),
-            "all".into(),
-            "--json".into(),
-            "state,isDraft,url,createdAt,number".into(),
-        ],
-        Some(cwd),
-        false,
-        true,
-    );
-    if result.status != 0 || result.stdout.trim().is_empty() {
-        return String::new();
-    }
-    let Ok(JsonValue::Array(prs)) = serde_json::from_str::<JsonValue>(&result.stdout) else {
-        return String::new();
-    };
-    let Some(pr) = prs.first() else {
-        return String::new();
-    };
+fn branch_supports_pr_lookup(branch: &str) -> bool {
+    !(branch.is_empty() || branch == "HEAD" || branch == "DETACHED" || branch == "N/A")
+}
+
+fn format_pr_info(pr: &JsonValue) -> String {
     let state = pr.get("state").and_then(JsonValue::as_str).unwrap_or("");
     let is_draft = pr
         .get("isDraft")
@@ -2414,6 +2390,91 @@ fn get_pr_info(branch: &str, cwd: &Path) -> String {
         format!("{red}✘{reset}")
     };
     format!("{symbol} \x1b]8;;{url}\x1b\\#{number}\x1b]8;;\x1b\\ ({rel_time})")
+}
+
+fn get_pr_info(branch: &str, cwd: &Path) -> String {
+    if !branch_supports_pr_lookup(branch) || which_cmd("gh").is_none() {
+        return String::new();
+    }
+    let result = run_command(
+        vec![
+            "gh".into(),
+            "pr".into(),
+            "list".into(),
+            "--head".into(),
+            branch.into(),
+            "--state".into(),
+            "all".into(),
+            "--json".into(),
+            "state,isDraft,url,createdAt,number".into(),
+        ],
+        Some(cwd),
+        false,
+        true,
+    );
+    if result.status != 0 || result.stdout.trim().is_empty() {
+        return String::new();
+    }
+    let Ok(JsonValue::Array(prs)) = serde_json::from_str::<JsonValue>(&result.stdout) else {
+        return String::new();
+    };
+    let Some(pr) = prs.first() else {
+        return String::new();
+    };
+    format_pr_info(pr)
+}
+
+fn get_pr_infos_for_worktrees(worktrees: &[WorktreeInfo], cwd: &Path) -> HashMap<String, String> {
+    let mut infos = HashMap::new();
+    if worktrees.is_empty() || which_cmd("gh").is_none() {
+        return infos;
+    }
+
+    let batch_limit = (worktrees.len() * 3).clamp(10, 100);
+    let result = run_command(
+        vec![
+            "gh".into(),
+            "pr".into(),
+            "list".into(),
+            "--state".into(),
+            "all".into(),
+            "--limit".into(),
+            batch_limit.to_string(),
+            "--json".into(),
+            "headRefName,state,isDraft,url,createdAt,number".into(),
+        ],
+        Some(cwd),
+        false,
+        true,
+    );
+    if result.status == 0 {
+        if let Ok(JsonValue::Array(prs)) = serde_json::from_str::<JsonValue>(&result.stdout) {
+            let mut duplicate_branches = HashSet::new();
+            for pr in prs {
+                if let Some(branch) = pr.get("headRefName").and_then(JsonValue::as_str) {
+                    if infos
+                        .insert(branch.to_string(), format_pr_info(&pr))
+                        .is_some()
+                    {
+                        duplicate_branches.insert(branch.to_string());
+                    }
+                }
+            }
+            for branch in duplicate_branches {
+                infos.remove(&branch);
+            }
+        }
+    }
+
+    for wt in worktrees {
+        if branch_supports_pr_lookup(&wt.branch) && !infos.contains_key(&wt.branch) {
+            let info = get_pr_info(&wt.branch, cwd);
+            if !info.is_empty() {
+                infos.insert(wt.branch.clone(), info);
+            }
+        }
+    }
+    infos
 }
 
 fn parse_clean_filter_options(args: &[String]) -> (bool, bool, bool, Option<i64>) {
@@ -2717,7 +2778,6 @@ fn cmd_list(args: &[String]) {
 
     let (clean_all, clean_merged, clean_closed, days) = parse_clean_filter_options(args);
     if quiet
-        && !show_pr
         && !clean_all
         && !clean_merged
         && !clean_closed
@@ -2755,9 +2815,12 @@ fn cmd_list(args: &[String]) {
     }
     sort_worktrees(&base_dir, &mut worktrees, &sort_key, descending);
 
-    if show_pr {
+    if show_pr && !quiet {
+        let pr_infos = get_pr_infos_for_worktrees(&worktrees, &base_dir);
         for wt in &mut worktrees {
-            wt.pr_info = get_pr_info(&wt.branch, &base_dir);
+            if let Some(info) = pr_infos.get(&wt.branch) {
+                wt.pr_info = info.clone();
+            }
         }
     }
 

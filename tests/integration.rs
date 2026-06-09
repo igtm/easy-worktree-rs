@@ -558,6 +558,91 @@ fn pr_add_uses_head_branch_name_for_branch_and_worktree() {
 
 #[cfg(unix)]
 #[test]
+fn list_pr_batches_gh_lookup_and_falls_back_for_misses() {
+    let root = temp_dir("list-pr-batch");
+    let repo = root.join("repo");
+    let xdg = root.join("xdg");
+    let log_file = root.join("gh.log");
+    init_repo(&repo);
+    run_wt(&["init"], &repo, &xdg);
+    run_wt(&["add", "feature/batched"], &repo, &xdg);
+    run_wt(&["add", "feature/missing"], &repo, &xdg);
+    run_wt(&["add", "feature/other"], &repo, &xdg);
+
+    let script = format!(
+        r#"#!/bin/sh
+printf '%s\n' "$*" >> {}
+case "$*" in
+  "pr list --state all --limit 12 --json headRefName,state,isDraft,url,createdAt,number")
+    printf '%s\n' '[{{"headRefName":"feature/batched","state":"OPEN","isDraft":false,"url":"https://example.test/pull/7","createdAt":"2026-06-01T00:00:00Z","number":7}},{{"headRefName":"feature/other","state":"MERGED","isDraft":false,"url":"https://example.test/pull/8","createdAt":"2026-06-01T00:00:00Z","number":8}}]'
+    ;;
+  "pr list --head feature/missing --state all --json state,isDraft,url,createdAt,number")
+    printf '%s\n' '[{{"state":"OPEN","isDraft":true,"url":"https://example.test/pull/9","createdAt":"2026-06-02T00:00:00Z","number":9}}]'
+    ;;
+  *)
+    printf '%s\n' '[]'
+    ;;
+esac
+"#,
+        shell_quote(&log_file.display().to_string())
+    );
+    let mock_path = path_with_git_and_script(&root, "gh", &script);
+
+    let output = run_wt_with_path(&["list", "--pr"], &repo, &xdg, &mock_path);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("PR"));
+    assert!(
+        stdout
+            .lines()
+            .any(|line| line.contains("feature/batched") && line.contains("#7"))
+    );
+    assert!(
+        stdout
+            .lines()
+            .any(|line| line.contains("feature/missing") && line.contains("#9"))
+    );
+
+    let log = fs::read_to_string(&log_file).unwrap();
+    assert_eq!(
+        log.matches(
+            "pr list --state all --limit 12 --json headRefName,state,isDraft,url,createdAt,number"
+        )
+        .count(),
+        1
+    );
+    assert!(!log.contains("pr list --head feature/batched"));
+    assert!(!log.contains("pr list --head feature/other"));
+    assert!(log.contains(
+        "pr list --head feature/missing --state all --json state,isDraft,url,createdAt,number"
+    ));
+}
+
+#[cfg(unix)]
+#[test]
+fn list_quiet_pr_does_not_call_gh() {
+    let root = temp_dir("list-quiet-pr-no-gh");
+    let repo = root.join("repo");
+    let xdg = root.join("xdg");
+    let log_file = root.join("gh.log");
+    init_repo(&repo);
+    run_wt(&["init"], &repo, &xdg);
+    run_wt(&["add", "feature/quiet"], &repo, &xdg);
+
+    let script = format!(
+        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> {}\nprintf '%s\\n' '[]'\n",
+        shell_quote(&log_file.display().to_string())
+    );
+    let mock_path = path_with_git_and_script(&root, "gh", &script);
+
+    let output = run_wt_with_path(&["list", "--quiet", "--pr"], &repo, &xdg, &mock_path);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.lines().any(|line| line == "feature/quiet"));
+    assert!(!stdout.contains("PR"));
+    assert!(!log_file.exists());
+}
+
+#[cfg(unix)]
+#[test]
 fn select_without_fzf_falls_back_to_numbered_prompt() {
     let root = temp_dir("interactive-select-no-fzf");
     let repo = root.join("repo");
