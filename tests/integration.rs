@@ -558,6 +558,47 @@ fn pr_add_uses_head_branch_name_for_branch_and_worktree() {
 
 #[cfg(unix)]
 #[test]
+fn add_does_not_track_origin_main_as_upstream() {
+    let root = temp_dir("add-no-upstream");
+    let repo = root.join("repo");
+    let xdg = root.join("xdg");
+    let origin = root.join("origin.git");
+    init_repo(&repo);
+
+    run("git", &["init", "--bare", origin.to_str().unwrap()], &root);
+    run(
+        "git",
+        &["remote", "add", "origin", origin.to_str().unwrap()],
+        &repo,
+    );
+    run("git", &["push", "-u", "origin", "main"], &repo);
+
+    run_wt(&["init"], &repo, &xdg);
+    run_wt(&["add", "feature1"], &repo, &xdg);
+
+    let wt_path = repo.join(".worktrees/feature1");
+    assert!(wt_path.exists());
+    assert_eq!(
+        String::from_utf8_lossy(&run("git", &["branch", "--show-current"], &wt_path).stdout).trim(),
+        "feature1"
+    );
+
+    // The new branch must not track origin/main, which would make a bare
+    // `git push` potentially update the remote main branch.
+    let upstream = Command::new("git")
+        .args(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"])
+        .current_dir(&wt_path)
+        .output()
+        .unwrap();
+    assert!(
+        !upstream.status.success(),
+        "feature1 should not have an upstream, but got: {}",
+        String::from_utf8_lossy(&upstream.stdout)
+    );
+}
+
+#[cfg(unix)]
+#[test]
 fn list_pr_batches_gh_lookup_and_falls_back_for_misses() {
     let root = temp_dir("list-pr-batch");
     let repo = root.join("repo");
