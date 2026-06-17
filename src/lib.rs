@@ -1604,6 +1604,32 @@ fn cmd_init(_args: &[String]) {
     create_hook_template(&base_dir);
 }
 
+/// Resolve a start-point ref to a commit hash when it looks like a remote
+/// tracking branch. This prevents `git worktree add -b <new> <path> <start>`
+/// from automatically setting the new branch's upstream to the remote branch.
+fn resolve_start_point_to_hash(base_dir: &Path, start_point: &str) -> String {
+    if start_point.contains('/') {
+        let result = run_command(
+            vec![
+                "git".into(),
+                "rev-parse".into(),
+                "--verify".into(),
+                start_point.into(),
+            ],
+            Some(base_dir),
+            false,
+            true,
+        );
+        if result.status == 0 {
+            let hash = result.stdout.trim();
+            if !hash.is_empty() {
+                return hash.to_string();
+            }
+        }
+    }
+    start_point.to_string()
+}
+
 fn add_worktree(
     work_name: &str,
     branch_to_use: Option<&str>,
@@ -1704,7 +1730,7 @@ fn add_worktree(
                 "-b".into(),
                 final_branch_name.clone(),
                 worktree_path.display().to_string(),
-                new_branch_base.into(),
+                resolve_start_point_to_hash(&base_dir, new_branch_base),
             ],
             Some(&base_dir),
             false,
@@ -1749,7 +1775,7 @@ fn add_worktree(
                             "-b".into(),
                             final_branch_name.clone(),
                             worktree_path.display().to_string(),
-                            branch_to_use.into(),
+                            resolve_start_point_to_hash(&base_dir, branch_to_use),
                         ],
                         Some(&base_dir),
                         false,
@@ -1929,7 +1955,7 @@ fn add_worktree(
                     "-b".into(),
                     final_branch_name.clone(),
                     worktree_path.display().to_string(),
-                    detected_base,
+                    resolve_start_point_to_hash(&base_dir, &detected_base),
                 ],
                 Some(&base_dir),
                 false,
