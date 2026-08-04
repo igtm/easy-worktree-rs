@@ -153,8 +153,8 @@ fn template(key: &str) -> (&'static str, &'static str) {
             "使用方法: wt clone (cn) [--bare] <repository_url> [dest_dir]",
         ),
         "usage_add" => (
-            "Usage: wt add (ad) [<work_name> [<base_branch>]] [--skip-setup|--no-setup] [--select [<command>...]]",
-            "使用方法: wt add (ad) [<作業名> [<base_branch>]] [--skip-setup|--no-setup] [--select [<コマンド>...]]",
+            "Usage: wt add (ad) [<work_name> [<base_branch>]] [--skip-setup|--no-setup] [--skip-hook|--no-hook] [--select [<command>...]]",
+            "使用方法: wt add (ad) [<作業名> [<base_branch>]] [--skip-setup|--no-setup] [--skip-hook|--no-hook] [--select [<コマンド>...]]",
         ),
         "usage_select" => (
             "Usage: wt select (se, sl) [<name>|-] [<command>...]",
@@ -1746,12 +1746,21 @@ fn resolve_start_point_to_hash(base_dir: &Path, start_point: &str) -> String {
     start_point.to_string()
 }
 
+/// What a newly created worktree should skip. `skip_setup` covers the whole
+/// setup step (copying `setup_files` and running `post-add`); `skip_hook`
+/// keeps the file copy but leaves the hook out.
+#[derive(Debug, Clone, Copy, Default)]
+struct SetupOptions {
+    skip_setup: bool,
+    skip_hook: bool,
+}
+
 fn add_worktree(
     work_name: &str,
     branch_to_use: Option<&str>,
     new_branch_base: Option<&str>,
     base_dir: Option<PathBuf>,
-    skip_setup: bool,
+    setup: SetupOptions,
 ) -> PathBuf {
     let base_dir = match base_dir.or_else(find_base_dir) {
         Some(path) => path,
@@ -2082,15 +2091,17 @@ fn add_worktree(
 
     if result.status == 0 {
         record_worktree_created(&base_dir, &worktree_path, None);
-        if !skip_setup {
+        if !setup.skip_setup {
             let setup_files = config_setup_files(&config);
             copy_setup_files(&base_dir, &worktree_path, &setup_files, &config);
-            run_post_add_hook(
-                &worktree_path,
-                work_name,
-                &base_dir,
-                Some(&final_branch_name),
-            );
+            if !setup.skip_hook {
+                run_post_add_hook(
+                    &worktree_path,
+                    work_name,
+                    &base_dir,
+                    Some(&final_branch_name),
+                );
+            }
         }
         worktree_path
     } else {
@@ -2103,7 +2114,7 @@ fn add_worktree(
 
 fn cmd_add(args: &[String]) {
     let mut clean_args = Vec::new();
-    let mut skip_setup = false;
+    let mut setup = SetupOptions::default();
     let mut select = false;
     let mut select_command: Option<Vec<String>> = None;
     let mut prompted_work_name = false;
@@ -2111,7 +2122,9 @@ fn cmd_add(args: &[String]) {
     while i < args.len() {
         let arg = &args[i];
         if arg == "--skip-setup" || arg == "--no-setup" {
-            skip_setup = true;
+            setup.skip_setup = true;
+        } else if arg == "--skip-hook" || arg == "--no-hook" {
+            setup.skip_hook = true;
         } else if arg == "--select" {
             select = true;
             if i + 1 < args.len() {
@@ -2144,13 +2157,7 @@ fn cmd_add(args: &[String]) {
     let work_name = clean_args[0].clone();
     let branch_to_use = clean_args.get(1).map(String::as_str);
     let base_dir = find_base_dir();
-    let wt_path = add_worktree(
-        &work_name,
-        branch_to_use,
-        None,
-        base_dir.clone(),
-        skip_setup,
-    );
+    let wt_path = add_worktree(&work_name, branch_to_use, None, base_dir.clone(), setup);
     let should_select = select || (prompted_work_name && prompt_select_created_worktree());
     if should_select {
         let base_dir = base_dir.unwrap_or_else(|| {
@@ -2239,7 +2246,7 @@ fn cmd_stash(args: &[String]) {
         None,
         new_branch_base.as_deref(),
         Some(base_dir),
-        false,
+        SetupOptions::default(),
     );
     if has_changes {
         eprintln!("{}", m0("popping_stash"));
@@ -2332,7 +2339,7 @@ fn cmd_pr(args: &[String]) {
             Some(&branch_name),
             None,
             Some(base_dir),
-            false,
+            SetupOptions::default(),
         );
     } else if subcommand == "co" {
         cmd_checkout(&[pr_head_branch_name()]);
@@ -3842,7 +3849,7 @@ fn bash_completion_script() -> &'static str {
 
     case "${subcmd}" in
         add|ad)
-            COMPREPLY=( $(compgen -W "--skip-setup --no-setup --select ${wt_names}" -- "${cur}") )
+            COMPREPLY=( $(compgen -W "--skip-setup --no-setup --skip-hook --no-hook --select ${wt_names}" -- "${cur}") )
             ;;
         rm|remove)
             COMPREPLY=( $(compgen -W "-f --force --skip-hook --no-hook ${wt_names}" -- "${cur}") )
@@ -3907,7 +3914,7 @@ fn show_help() {
         );
         println!(
             "  {:<55} - worktree を追加",
-            "add (ad) [<作業名> [<base_branch>]] [--skip-setup|--no-setup] [--select [<コマンド>...]]"
+            "add (ad) [<作業名> [<base_branch>]] [--skip-setup|--no-setup] [--skip-hook|--no-hook] [--select [<コマンド>...]]"
         );
         println!(
             "  {:<55} - 作業ディレクトリを切り替え（fzf対応、未導入時は番号選択）",
@@ -3979,7 +3986,7 @@ fn show_help() {
         );
         println!(
             "  {:<55} - Add a worktree",
-            "add (ad) [<work_name> [<base_branch>]] [--skip-setup|--no-setup] [--select [<command>...]]"
+            "add (ad) [<work_name> [<base_branch>]] [--skip-setup|--no-setup] [--skip-hook|--no-hook] [--select [<command>...]]"
         );
         println!(
             "  {:<55} - Switch worktree selection (fzf or numbered fallback)",

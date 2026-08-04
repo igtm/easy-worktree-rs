@@ -6,7 +6,7 @@ Rust port of [`easy-worktree`](https://github.com/igtm/easy-worktree).
 
 ![easy-worktree-rs hero](./hero.png)
 
-`easy-worktree-rs` provides the `wt` command for managing Git worktrees with the same command surface as the Python package. The current version is `0.2.23`.
+`easy-worktree-rs` provides the `wt` command for managing Git worktrees with the same command surface as the Python package. The current version is `0.2.24`.
 
 ## Install
 
@@ -25,7 +25,7 @@ curl -fsSL https://raw.githubusercontent.com/igtm/easy-worktree-rs/main/install.
 Install a specific release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/igtm/easy-worktree-rs/main/install.sh | sh -s -- -v=v0.2.23
+curl -fsSL https://raw.githubusercontent.com/igtm/easy-worktree-rs/main/install.sh | sh -s -- -v=v0.2.24
 ```
 
 Install from GitHub with Cargo:
@@ -47,7 +47,7 @@ The CLI binary is `wt`:
 ```bash
 wt clone (cn) [--bare] <repository_url> [dest_dir]
 wt init (in)
-wt add (ad) [<work_name> [<base_branch>]] [--skip-setup|--no-setup] [--select [<command>...]]
+wt add (ad) [<work_name> [<base_branch>]] [--skip-setup|--no-setup] [--skip-hook|--no-hook] [--select [<command>...]]
 wt list (li, ls) [--pr] [--quiet|-q] [--days N] [--merged] [--closed] [--all]
 wt diff (di, df) [<name>] [args...]
 wt config (cf) [--global|--local] [<key> [<value>]]
@@ -202,13 +202,28 @@ want the hook alone.
 
 ### Skipping a hook
 
-`wt rm` and `wt clean` accept `--skip-hook` (or `--no-hook`) to remove a
-worktree without running `pre-rm`, mirroring `--skip-setup` on `wt add`.
+`wt add`, `wt rm` and `wt clean` accept `--skip-hook` (or `--no-hook`) to run
+without their hook.
 
 ```bash
+wt add feature-1 --skip-hook       # copy setup_files, but do not run post-add
 wt rm feature-1 --skip-hook
 wt clean --all --yes --skip-hook
 ```
+
+On `wt add` this is narrower than `--skip-setup`. "Setup" means two things —
+copying `setup_files` into the worktree and then running `post-add` — and the
+two flags let you skip either the whole step or just the hook:
+
+| | `setup_files` copied | `post-add` run |
+| --- | --- | --- |
+| `wt add` | yes | yes |
+| `wt add --skip-hook` | yes | no |
+| `wt add --skip-setup` | no | no |
+
+Skipping the hook is worth it when the hook is the slow part — installing
+dependencies, building images — and you want the worktree usable immediately.
+Run `wt hook post-add` later to catch up.
 
 ## Performance
 
