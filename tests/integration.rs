@@ -1346,6 +1346,97 @@ fn hook_command_runs_a_named_hook_without_removing_the_worktree() {
 
 #[cfg(unix)]
 #[test]
+fn hook_arg_values_reach_the_hook_as_argv_and_env() {
+    let root = temp_dir("hook-arg");
+    let repo = root.join("repo");
+    let xdg = root.join("xdg");
+    init_repo(&repo);
+    run_wt(&["init"], &repo, &xdg);
+
+    write_executable_script(
+        &repo.join(".wt/post-add"),
+        "#!/bin/sh\n\
+         {\n\
+           echo \"env=$WT_HOOK_ARGS\"\n\
+           echo \"count=$#\"\n\
+           for a in \"$@\"; do echo \"arg=$a\"; done\n\
+         } > \"$WT_BASE_DIR/args-$WT_WORKTREE_NAME\"\n",
+    );
+
+    run_wt(
+        &[
+            "add",
+            "with-args",
+            "--hook-arg",
+            "with-db",
+            "--hook-arg",
+            "seed=demo",
+        ],
+        &repo,
+        &xdg,
+    );
+    let log = fs::read_to_string(repo.join("args-with-args")).unwrap();
+    assert!(log.contains("env=with-db seed=demo"), "{log}");
+    assert!(log.contains("count=2"), "{log}");
+    assert!(log.contains("arg=with-db"), "{log}");
+    assert!(log.contains("arg=seed=demo"), "{log}");
+
+    // No --hook-arg means no argv and an empty WT_HOOK_ARGS.
+    run_wt(&["add", "plain"], &repo, &xdg);
+    let log = fs::read_to_string(repo.join("args-plain")).unwrap();
+    assert!(log.contains("env="), "{log}");
+    assert!(log.contains("count=0"), "{log}");
+
+    // A value containing whitespace survives in argv, which is authoritative.
+    run_wt(&["add", "spaced", "--hook-arg", "two words"], &repo, &xdg);
+    let log = fs::read_to_string(repo.join("args-spaced")).unwrap();
+    assert!(log.contains("count=1"), "{log}");
+    assert!(log.contains("arg=two words"), "{log}");
+}
+
+#[cfg(unix)]
+#[test]
+fn hook_command_forwards_hook_args_and_rejects_a_missing_value() {
+    let root = temp_dir("hook-arg-cmd");
+    let repo = root.join("repo");
+    let xdg = root.join("xdg");
+    init_repo(&repo);
+    run_wt(&["init"], &repo, &xdg);
+    run_wt(&["add", "target"], &repo, &xdg);
+
+    write_executable_script(
+        &repo.join(".wt/post-add"),
+        "#!/bin/sh\necho \"$WT_WORKTREE_NAME:$WT_HOOK_ARGS\" > \"$WT_BASE_DIR/hookcmd\"\n",
+    );
+
+    run_wt(
+        &["hook", "post-add", "target", "--hook-arg", "with-db"],
+        &repo,
+        &xdg,
+    );
+    assert_eq!(
+        fs::read_to_string(repo.join("hookcmd")).unwrap().trim(),
+        "target:with-db"
+    );
+
+    let output = Command::new(wt_bin())
+        .args(["hook", "post-add", "--hook-arg"])
+        .current_dir(&repo)
+        .env("LANG", "en")
+        .env("LC_ALL", "C")
+        .env("XDG_CONFIG_HOME", &xdg)
+        .output()
+        .unwrap();
+    assert!(!output.status.success(), "a dangling --hook-arg must fail");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("--hook-arg requires a value"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[cfg(unix)]
+#[test]
 fn hook_command_lists_hooks_and_rejects_unknown_names() {
     let root = temp_dir("hook-list");
     let repo = root.join("repo");

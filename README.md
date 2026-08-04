@@ -6,7 +6,7 @@ Rust port of [`easy-worktree`](https://github.com/igtm/easy-worktree).
 
 ![easy-worktree-rs hero](./hero.png)
 
-`easy-worktree-rs` provides the `wt` command for managing Git worktrees with the same command surface as the Python package. The current version is `0.2.25`.
+`easy-worktree-rs` provides the `wt` command for managing Git worktrees with the same command surface as the Python package. The current version is `0.2.26`.
 
 ## Install
 
@@ -25,7 +25,7 @@ curl -fsSL https://raw.githubusercontent.com/igtm/easy-worktree-rs/main/install.
 Install a specific release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/igtm/easy-worktree-rs/main/install.sh | sh -s -- -v=v0.2.25
+curl -fsSL https://raw.githubusercontent.com/igtm/easy-worktree-rs/main/install.sh | sh -s -- -v=v0.2.26
 ```
 
 Install from GitHub with Cargo:
@@ -47,14 +47,14 @@ The CLI binary is `wt`:
 ```bash
 wt clone (cn) [--bare] <repository_url> [dest_dir]
 wt init (in)
-wt add (ad) [<work_name> [<base_branch>]] [--skip-setup|--no-setup] [--skip-hook|--no-hook] [--select [<command>...]]
+wt add (ad) [<work_name> [<base_branch>]] [--skip-setup|--no-setup] [--skip-hook|--no-hook] [--hook-arg <value>]... [--select [<command>...]]
 wt list (li, ls) [--pr] [--quiet|-q] [--days N] [--merged] [--closed] [--all]
 wt diff (di, df) [<name>] [args...]
 wt config (cf) [--global|--local] [<key> [<value>]]
 wt rm/remove [<work_name>] [-f|--force] [--skip-hook|--no-hook]
 wt clean (cl) [--days N] [--merged] [--closed] [--all] [--yes|-y] [--skip-hook|--no-hook]
 wt setup (su)
-wt hook (ho) [<hook_name> [<work_name>]]
+wt hook (ho) [<hook_name> [<work_name>]] [--hook-arg <value>]...
 wt stash (st) <work_name> [<base_branch>]
 wt pr add <number>
 wt select (se, sl) [<name>|-] [<command>...]
@@ -177,6 +177,7 @@ Both hooks receive the same environment variables:
 | `WT_BASE_DIR` | Path to the main repository directory |
 | `WT_BRANCH` | Branch name |
 | `WT_ACTION` | `add` for `post-add`, `rm` for `pre-rm` |
+| `WT_HOOK_ARGS` | Values from `--hook-arg`, joined by spaces |
 
 The working directory is the worktree itself. `pre-rm` runs while the worktree
 still exists, so it can inspect the files it is about to lose — which makes it
@@ -189,6 +190,29 @@ A non-zero exit status is reported as a warning and does not stop the
 operation; in particular a failing `pre-rm` still removes the worktree, and the
 hook runs again on a retry when the removal itself fails, so keep `pre-rm`
 idempotent.
+
+### Passing values to a hook
+
+`--hook-arg <value>` hands a value to the hook. Repeat it to pass several. The
+values arrive as positional arguments (`"$@"`) and, joined by spaces, as
+`WT_HOOK_ARGS`.
+
+```bash
+wt add feature --hook-arg with-db
+wt add feature --hook-arg with-db --hook-arg seed=demo
+wt hook post-add feature --hook-arg with-db
+```
+
+```bash
+# .wt/post-add
+case " $WT_HOOK_ARGS " in
+    *" with-db "*) provision_database ;;
+esac
+```
+
+`"$@"` is the authoritative form: `WT_HOOK_ARGS` cannot represent a value that
+contains whitespace. `wt` does not interpret the values, so their meaning is
+entirely up to the hook.
 
 ### Running a hook on its own
 
