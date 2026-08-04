@@ -25,6 +25,11 @@ const POST_ADD_TEMPLATE: &str = r#"#!/bin/bash
 #   WT_BASE_DIR       - Path to the main repository directory
 #   WT_BRANCH         - Branch name
 #   WT_ACTION         - Action name (add)
+#   WT_HOOK_ARGS      - Values from `--hook-arg`, joined by spaces
+#
+# Values passed with `wt add --hook-arg <value>` also arrive as positional
+# arguments ("$@"), which is the authoritative form when a value contains
+# whitespace.
 #
 # Example: Install dependencies and copy configuration files
 #
@@ -153,8 +158,8 @@ fn template(key: &str) -> (&'static str, &'static str) {
             "使用方法: wt clone (cn) [--bare] <repository_url> [dest_dir]",
         ),
         "usage_add" => (
-            "Usage: wt add (ad) [<work_name> [<base_branch>]] [--skip-setup|--no-setup] [--skip-hook|--no-hook] [--select [<command>...]]",
-            "使用方法: wt add (ad) [<作業名> [<base_branch>]] [--skip-setup|--no-setup] [--skip-hook|--no-hook] [--select [<コマンド>...]]",
+            "Usage: wt add (ad) [<work_name> [<base_branch>]] [--skip-setup|--no-setup] [--skip-hook|--no-hook] [--hook-arg <value>]... [--select [<command>...]]",
+            "使用方法: wt add (ad) [<作業名> [<base_branch>]] [--skip-setup|--no-setup] [--skip-hook|--no-hook] [--hook-arg <value>]... [--select [<コマンド>...]]",
         ),
         "usage_select" => (
             "Usage: wt select (se, sl) [<name>|-] [<command>...]",
@@ -230,9 +235,10 @@ fn template(key: &str) -> (&'static str, &'static str) {
             "Warning: hook exited with code {}",
             "警告: hook が終了コード {} で終了しました",
         ),
+        "missing_flag_value" => ("{} requires a value", "{} には値の指定が必要です"),
         "usage_hook" => (
-            "Usage: wt hook (ho) [<hook_name> [<work_name>]]",
-            "使用方法: wt hook (ho) [<hook 名> [<作業名>]]",
+            "Usage: wt hook (ho) [<hook_name> [<work_name>]] [--hook-arg <value>]...",
+            "使用方法: wt hook (ho) [<hook 名> [<作業名>]] [--hook-arg <値>]...",
         ),
         "unknown_hook" => (
             "Unknown hook: {} (available: {})",
@@ -1568,7 +1574,13 @@ fn copy_setup_files(
     count
 }
 
-fn run_post_add_hook(worktree_path: &Path, work_name: &str, base_dir: &Path, branch: Option<&str>) {
+fn run_post_add_hook(
+    worktree_path: &Path,
+    work_name: &str,
+    base_dir: &Path,
+    branch: Option<&str>,
+    hook_args: &[String],
+) {
     run_hook(
         "post-add",
         "add",
@@ -1576,11 +1588,20 @@ fn run_post_add_hook(worktree_path: &Path, work_name: &str, base_dir: &Path, bra
         work_name,
         base_dir,
         branch,
+        hook_args,
     );
 }
 
 fn run_pre_rm_hook(worktree_path: &Path, work_name: &str, base_dir: &Path, branch: Option<&str>) {
-    run_hook("pre-rm", "rm", worktree_path, work_name, base_dir, branch);
+    run_hook(
+        "pre-rm",
+        "rm",
+        worktree_path,
+        work_name,
+        base_dir,
+        branch,
+        &[],
+    );
 }
 
 /// Branch names are stored with an `"N/A"` placeholder when Git reports no
@@ -1610,6 +1631,7 @@ fn run_hook(
     work_name: &str,
     base_dir: &Path,
     branch: Option<&str>,
+    hook_args: &[String],
 ) {
     let hook_path = get_wt_dir(base_dir).join(hook_name);
     if !hook_path.is_file() {
@@ -1630,7 +1652,12 @@ fn run_hook(
         base_dir
     };
     let mut child = match Command::new(&hook_path)
+        .args(hook_args)
         .current_dir(current_dir)
+        // Positional argv is authoritative. WT_HOOK_ARGS is a convenience for
+        // hooks that only need to test for a word, and is lossy when a value
+        // contains whitespace.
+        .env("WT_HOOK_ARGS", hook_args.join(" "))
         .env("WT_WORKTREE_PATH", worktree_path)
         .env("WT_WORKTREE_NAME", work_name)
         .env("WT_BASE_DIR", base_dir)
@@ -1767,10 +1794,12 @@ fn resolve_start_point_to_hash(base_dir: &Path, start_point: &str) -> String {
 /// What a newly created worktree should skip. `skip_setup` covers the whole
 /// setup step (copying `setup_files` and running `post-add`); `skip_hook`
 /// keeps the file copy but leaves the hook out.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 struct SetupOptions {
     skip_setup: bool,
     skip_hook: bool,
+    /// Extra values handed to the hook, from repeated `--hook-arg`.
+    hook_args: Vec<String>,
 }
 
 fn add_worktree(
@@ -2118,6 +2147,7 @@ fn add_worktree(
                     work_name,
                     &base_dir,
                     Some(&final_branch_name),
+                    &setup.hook_args,
                 );
             }
         }
@@ -2143,6 +2173,14 @@ fn cmd_add(args: &[String]) {
             setup.skip_setup = true;
         } else if arg == "--skip-hook" || arg == "--no-hook" {
             setup.skip_hook = true;
+        } else if arg == "--hook-arg" {
+            match args.get(i + 1) {
+                Some(value) => {
+                    setup.hook_args.push(value.clone());
+                    i += 1;
+                }
+                None => fatal(m1("error", m1("missing_flag_value", "--hook-arg"))),
+            }
         } else if arg == "--select" {
             select = true;
             if i + 1 < args.len() {
@@ -3665,7 +3703,13 @@ fn cmd_setup(_args: &[String]) {
         worktree_display_name(&base_dir, &target_path)
     };
     let branch_name = current_branch_of(&target_path);
-    run_post_add_hook(&target_path, &work_name, &base_dir, branch_name.as_deref());
+    run_post_add_hook(
+        &target_path,
+        &work_name,
+        &base_dir,
+        branch_name.as_deref(),
+        &[],
+    );
 }
 
 fn current_branch_of(path: &Path) -> Option<String> {
@@ -3705,7 +3749,26 @@ fn cmd_hook(args: &[String]) {
     let Some(base_dir) = find_base_dir() else {
         fatal(m1("error", m0("base_not_found")));
     };
-    let Some(hook_name) = args.first() else {
+
+    let mut positional = Vec::new();
+    let mut hook_args = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        if args[i] == "--hook-arg" {
+            match args.get(i + 1) {
+                Some(value) => {
+                    hook_args.push(value.clone());
+                    i += 1;
+                }
+                None => fatal(m1("error", m1("missing_flag_value", "--hook-arg"))),
+            }
+        } else {
+            positional.push(args[i].clone());
+        }
+        i += 1;
+    }
+
+    let Some(hook_name) = positional.first() else {
         list_hooks(&base_dir);
         return;
     };
@@ -3722,7 +3785,7 @@ fn cmd_hook(args: &[String]) {
         std::process::exit(1);
     };
 
-    let (target_path, work_name) = match args.get(1) {
+    let (target_path, work_name) = match positional.get(1) {
         Some(name) => {
             let worktrees = get_named_worktrees(&base_dir);
             let found = worktrees
@@ -3759,6 +3822,7 @@ fn cmd_hook(args: &[String]) {
         &work_name,
         &base_dir,
         branch.as_deref(),
+        &hook_args,
     );
 }
 
@@ -3867,7 +3931,7 @@ fn bash_completion_script() -> &'static str {
 
     case "${subcmd}" in
         add|ad)
-            COMPREPLY=( $(compgen -W "--skip-setup --no-setup --skip-hook --no-hook --select ${wt_names}" -- "${cur}") )
+            COMPREPLY=( $(compgen -W "--skip-setup --no-setup --skip-hook --no-hook --hook-arg --select ${wt_names}" -- "${cur}") )
             ;;
         rm|remove)
             COMPREPLY=( $(compgen -W "-f --force --skip-hook --no-hook ${wt_names}" -- "${cur}") )
@@ -3879,7 +3943,7 @@ fn bash_completion_script() -> &'static str {
             COMPREPLY=( $(compgen -W "--days --merged --closed --all --yes -y --skip-hook --no-hook" -- "${cur}") )
             ;;
         hook|ho)
-            COMPREPLY=( $(compgen -W "post-add pre-rm ${wt_names}" -- "${cur}") )
+            COMPREPLY=( $(compgen -W "post-add pre-rm --hook-arg ${wt_names}" -- "${cur}") )
             ;;
         list|li|ls)
             COMPREPLY=( $(compgen -W "--pr --quiet -q --days --merged --closed --all --sort --asc --desc created last-commit name branch" -- "${cur}") )
@@ -3932,7 +3996,7 @@ fn show_help() {
         );
         println!(
             "  {:<55} - worktree を追加",
-            "add (ad) [<作業名> [<base_branch>]] [--skip-setup|--no-setup] [--skip-hook|--no-hook] [--select [<コマンド>...]]"
+            "add (ad) [<作業名> [<base_branch>]] [--skip-setup|--no-setup] [--skip-hook|--no-hook] [--hook-arg <value>]... [--select [<コマンド>...]]"
         );
         println!(
             "  {:<55} - 作業ディレクトリを切り替え（fzf対応、未導入時は番号選択）",
@@ -3974,7 +4038,7 @@ fn show_help() {
         );
         println!(
             "  {:<55} - hook を単体で実行（引数なしで一覧表示）",
-            "hook (ho) [<hook 名> [<作業名>]]"
+            "hook (ho) [<hook 名> [<作業名>]] [--hook-arg <値>]..."
         );
         println!(
             "  {:<55} - コマンドを指定 worktree で実行",
@@ -4004,7 +4068,7 @@ fn show_help() {
         );
         println!(
             "  {:<55} - Add a worktree",
-            "add (ad) [<work_name> [<base_branch>]] [--skip-setup|--no-setup] [--skip-hook|--no-hook] [--select [<command>...]]"
+            "add (ad) [<work_name> [<base_branch>]] [--skip-setup|--no-setup] [--skip-hook|--no-hook] [--hook-arg <value>]... [--select [<command>...]]"
         );
         println!(
             "  {:<55} - Switch worktree selection (fzf or numbered fallback)",
@@ -4049,7 +4113,7 @@ fn show_help() {
         );
         println!(
             "  {:<55} - Run a hook on its own (lists hooks when given no name)",
-            "hook (ho) [<hook_name> [<work_name>]]"
+            "hook (ho) [<hook_name> [<work_name>]] [--hook-arg <value>]..."
         );
         println!(
             "  {:<55} - Run a command in a worktree",

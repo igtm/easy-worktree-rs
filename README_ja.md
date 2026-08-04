@@ -6,7 +6,7 @@
 
 ![easy-worktree-rs hero](./hero.png)
 
-`easy-worktree-rs` は Git worktree を管理する `wt` コマンドを提供します。Python 版と同じコマンド体系を目指しており、現在のバージョンは `0.2.25` です。
+`easy-worktree-rs` は Git worktree を管理する `wt` コマンドを提供します。Python 版と同じコマンド体系を目指しており、現在のバージョンは `0.2.26` です。
 
 ## インストール
 
@@ -25,7 +25,7 @@ curl -fsSL https://raw.githubusercontent.com/igtm/easy-worktree-rs/main/install.
 バージョンを指定する場合:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/igtm/easy-worktree-rs/main/install.sh | sh -s -- -v=v0.2.25
+curl -fsSL https://raw.githubusercontent.com/igtm/easy-worktree-rs/main/install.sh | sh -s -- -v=v0.2.26
 ```
 
 Cargo で GitHub からインストールする場合:
@@ -47,14 +47,14 @@ cargo install --path . --locked
 ```bash
 wt clone (cn) [--bare] <repository_url> [dest_dir]
 wt init (in)
-wt add (ad) [<work_name> [<base_branch>]] [--skip-setup|--no-setup] [--skip-hook|--no-hook] [--select [<command>...]]
+wt add (ad) [<work_name> [<base_branch>]] [--skip-setup|--no-setup] [--skip-hook|--no-hook] [--hook-arg <value>]... [--select [<command>...]]
 wt list (li, ls) [--pr] [--quiet|-q] [--days N] [--merged] [--closed] [--all]
 wt diff (di, df) [<name>] [args...]
 wt config (cf) [--global|--local] [<key> [<value>]]
 wt rm/remove [<work_name>] [-f|--force] [--skip-hook|--no-hook]
 wt clean (cl) [--days N] [--merged] [--closed] [--all] [--yes|-y] [--skip-hook|--no-hook]
 wt setup (su)
-wt hook (ho) [<hook_name> [<work_name>]]
+wt hook (ho) [<hook_name> [<work_name>]] [--hook-arg <value>]...
 wt stash (st) <work_name> [<base_branch>]
 wt pr add <number>
 wt select (se, sl) [<name>|-] [<command>...]
@@ -178,6 +178,7 @@ hook と共有設定が入るディレクトリであり、これらはチーム
 | `WT_BASE_DIR` | メインリポジトリの path |
 | `WT_BRANCH` | ブランチ名 |
 | `WT_ACTION` | `post-add` では `add`、`pre-rm` では `rm` |
+| `WT_HOOK_ARGS` | `--hook-arg` で渡された値をスペース区切りで連結したもの |
 
 作業ディレクトリは worktree 自身です。
 `pre-rm` は worktree がまだ存在する状態で走るため、これから失われるファイルを参照できます。
@@ -188,6 +189,27 @@ hook の出力は stderr に流れ、hook は `wt` の stdin を継承しませ�
 終了コードが 0 以外の場合は警告として報告されるだけで、処理は止まりません。
 とくに `pre-rm` が失敗しても worktree は削除されます。
 また削除自体が失敗して再実行した場合は hook も再度走るため、`pre-rm` は冪等に保ってください。
+
+### hook に値を渡す
+
+`--hook-arg <値>` で hook に値を渡せます。複数渡す場合は繰り返し指定します。
+値は位置引数（`"$@"`）として、またスペース区切りで連結した `WT_HOOK_ARGS` として hook に届きます。
+
+```bash
+wt add feature --hook-arg with-db
+wt add feature --hook-arg with-db --hook-arg seed=demo
+wt hook post-add feature --hook-arg with-db
+```
+
+```bash
+# .wt/post-add
+case " $WT_HOOK_ARGS " in
+    *" with-db "*) provision_database ;;
+esac
+```
+
+正となるのは `"$@"` です。`WT_HOOK_ARGS` は空白を含む値を表現できません。
+`wt` は値を解釈しないので、意味づけは hook 側の責任です。
 
 ### hook を単体で実行する
 
