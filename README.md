@@ -6,7 +6,7 @@ Rust port of [`easy-worktree`](https://github.com/igtm/easy-worktree).
 
 ![easy-worktree-rs hero](./hero.png)
 
-`easy-worktree-rs` provides the `wt` command for managing Git worktrees with the same command surface as the Python package. The current version is `0.2.22`.
+`easy-worktree-rs` provides the `wt` command for managing Git worktrees with the same command surface as the Python package. The current version is `0.2.23`.
 
 ## Install
 
@@ -25,7 +25,7 @@ curl -fsSL https://raw.githubusercontent.com/igtm/easy-worktree-rs/main/install.
 Install a specific release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/igtm/easy-worktree-rs/main/install.sh | sh -s -- -v=v0.2.22
+curl -fsSL https://raw.githubusercontent.com/igtm/easy-worktree-rs/main/install.sh | sh -s -- -v=v0.2.23
 ```
 
 Install from GitHub with Cargo:
@@ -148,6 +148,38 @@ Create a worktree from a PR using the PR head branch name:
 wt pr add 123
 wt pr co 123
 ```
+
+## Hooks
+
+`wt init` creates executable hook templates under `.wt/`. Each hook is an
+ordinary executable script, so any language works as long as it has a shebang.
+
+| Hook | Runs | Triggered by |
+| --- | --- | --- |
+| `.wt/post-add` | After a worktree is created | `wt add`, `wt pr add`, `wt stash`, `wt setup` |
+| `.wt/pre-rm` | Before a worktree is removed | `wt rm`, `wt clean` |
+
+Both hooks receive the same environment variables:
+
+| Variable | Description |
+| --- | --- |
+| `WT_WORKTREE_PATH` | Path to the worktree |
+| `WT_WORKTREE_NAME` | Name of the worktree |
+| `WT_BASE_DIR` | Path to the main repository directory |
+| `WT_BRANCH` | Branch name |
+| `WT_ACTION` | `add` for `post-add`, `rm` for `pre-rm` |
+
+The working directory is the worktree itself. `pre-rm` runs while the worktree
+still exists, so it can inspect the files it is about to lose — which makes it
+the place to release anything created for that worktree, such as build
+outputs, containers, images or volumes that live outside the worktree
+directory.
+
+Hook output is streamed to stderr, and the hook does not inherit `wt`'s stdin.
+A non-zero exit status is reported as a warning and does not stop the
+operation; in particular a failing `pre-rm` still removes the worktree, and the
+hook runs again on a retry when the removal itself fails, so keep `pre-rm`
+idempotent.
 
 ## Performance
 

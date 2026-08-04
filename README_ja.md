@@ -6,7 +6,7 @@
 
 ![easy-worktree-rs hero](./hero.png)
 
-`easy-worktree-rs` は Git worktree を管理する `wt` コマンドを提供します。Python 版と同じコマンド体系を目指しており、現在のバージョンは `0.2.22` です。
+`easy-worktree-rs` は Git worktree を管理する `wt` コマンドを提供します。Python 版と同じコマンド体系を目指しており、現在のバージョンは `0.2.23` です。
 
 ## インストール
 
@@ -25,7 +25,7 @@ curl -fsSL https://raw.githubusercontent.com/igtm/easy-worktree-rs/main/install.
 バージョンを指定する場合:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/igtm/easy-worktree-rs/main/install.sh | sh -s -- -v=v0.2.22
+curl -fsSL https://raw.githubusercontent.com/igtm/easy-worktree-rs/main/install.sh | sh -s -- -v=v0.2.23
 ```
 
 Cargo で GitHub からインストールする場合:
@@ -147,6 +147,36 @@ PR の head branch 名で worktree を作成し、その path を確認します
 wt pr add 123
 wt pr co 123
 ```
+
+## フック
+
+`wt init` は `.wt/` 以下に実行可能な hook テンプレートを作成します。
+hook は普通の実行可能スクリプトなので、shebang さえあれば言語は問いません。
+
+| Hook | 実行タイミング | 発火するコマンド |
+| --- | --- | --- |
+| `.wt/post-add` | worktree の作成後 | `wt add`, `wt pr add`, `wt stash`, `wt setup` |
+| `.wt/pre-rm` | worktree の削除前 | `wt rm`, `wt clean` |
+
+どちらの hook にも同じ環境変数が渡されます。
+
+| 変数 | 説明 |
+| --- | --- |
+| `WT_WORKTREE_PATH` | worktree の path |
+| `WT_WORKTREE_NAME` | worktree 名 |
+| `WT_BASE_DIR` | メインリポジトリの path |
+| `WT_BRANCH` | ブランチ名 |
+| `WT_ACTION` | `post-add` では `add`、`pre-rm` では `rm` |
+
+作業ディレクトリは worktree 自身です。
+`pre-rm` は worktree がまだ存在する状態で走るため、これから失われるファイルを参照できます。
+worktree のために作った成果物、たとえば worktree ディレクトリの外に置かれた
+build 出力、container、image、volume などを開放する場所として使えます。
+
+hook の出力は stderr に流れ、hook は `wt` の stdin を継承しません。
+終了コードが 0 以外の場合は警告として報告されるだけで、処理は止まりません。
+とくに `pre-rm` が失敗しても worktree は削除されます。
+また削除自体が失敗して再実行した場合は hook も再度走るため、`pre-rm` は冪等に保ってください。
 
 ## パフォーマンス
 

@@ -1093,6 +1093,127 @@ fn setup_hook_uses_worktree_name_when_detached() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn init_creates_executable_pre_rm_hook_template() {
+    let root = temp_dir("pre-rm-template");
+    let repo = root.join("repo");
+    let xdg = root.join("xdg");
+    init_repo(&repo);
+    run_wt(&["init"], &repo, &xdg);
+
+    let hook = repo.join(".wt/pre-rm");
+    assert!(hook.is_file(), "pre-rm template was not created");
+    let mode = fs::metadata(&hook).unwrap().permissions().mode();
+    assert_ne!(mode & 0o111, 0, "pre-rm template is not executable");
+
+    let ignore = fs::read_to_string(repo.join(".wt/.gitignore")).unwrap();
+    assert!(ignore.contains("pre-rm.local"), "{ignore}");
+}
+
+#[cfg(unix)]
+#[test]
+fn pre_rm_hook_runs_before_worktree_is_removed() {
+    let root = temp_dir("pre-rm-run");
+    let repo = root.join("repo");
+    let xdg = root.join("xdg");
+    init_repo(&repo);
+    run_wt(&["init"], &repo, &xdg);
+    run_wt(&["add", "doomed"], &repo, &xdg);
+
+    let worktree = repo.join(".worktrees/doomed");
+    assert!(worktree.exists());
+    // Resolve before removal; the path is gone by the time the assertions run.
+    let worktree_real = fs::canonicalize(&worktree).unwrap();
+
+    write_executable_script(
+        &repo.join(".wt/pre-rm"),
+        "#!/bin/sh\n\
+         {\n\
+           echo \"name=$WT_WORKTREE_NAME\"\n\
+           echo \"branch=$WT_BRANCH\"\n\
+           echo \"action=$WT_ACTION\"\n\
+           echo \"base=$WT_BASE_DIR\"\n\
+           echo \"path=$WT_WORKTREE_PATH\"\n\
+           echo \"cwd=$PWD\"\n\
+           [ -d \"$WT_WORKTREE_PATH\" ] && echo worktree-still-present\n\
+         } > \"$WT_BASE_DIR/pre-rm.log\"\n",
+    );
+
+    let output = run_wt(&["rm", "--force", "doomed"], &repo, &xdg);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Running pre-rm hook"), "{stderr}");
+    assert!(!worktree.exists(), "worktree was not removed");
+
+    let log = fs::read_to_string(repo.join("pre-rm.log")).unwrap();
+    assert!(log.contains("name=doomed"), "{log}");
+    assert!(log.contains("branch=doomed"), "{log}");
+    assert!(log.contains("action=rm"), "{log}");
+    assert!(
+        log.contains("worktree-still-present"),
+        "hook ran after the worktree was removed\n{log}"
+    );
+    let cwd = log
+        .lines()
+        .find_map(|line| line.strip_prefix("cwd="))
+        .unwrap();
+    assert_eq!(
+        Path::new(cwd),
+        worktree_real,
+        "hook did not run inside the worktree\n{log}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn pre_rm_hook_failure_does_not_block_removal() {
+    let root = temp_dir("pre-rm-fail");
+    let repo = root.join("repo");
+    let xdg = root.join("xdg");
+    init_repo(&repo);
+    run_wt(&["init"], &repo, &xdg);
+    run_wt(&["add", "doomed"], &repo, &xdg);
+
+    write_executable_script(
+        &repo.join(".wt/pre-rm"),
+        "#!/bin/sh\necho HOOK-BOOM >&2\nexit 3\n",
+    );
+
+    let output = run_wt(&["rm", "--force", "doomed"], &repo, &xdg);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("HOOK-BOOM"), "{stderr}");
+    assert!(stderr.contains("exited with code 3"), "{stderr}");
+    assert!(
+        !repo.join(".worktrees/doomed").exists(),
+        "worktree removal was blocked by a failing hook"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn clean_runs_pre_rm_hook_for_each_worktree() {
+    let root = temp_dir("pre-rm-clean");
+    let repo = root.join("repo");
+    let xdg = root.join("xdg");
+    init_repo(&repo);
+    run_wt(&["init"], &repo, &xdg);
+    run_wt(&["add", "first"], &repo, &xdg);
+    run_wt(&["add", "second"], &repo, &xdg);
+
+    write_executable_script(
+        &repo.join(".wt/pre-rm"),
+        "#!/bin/sh\necho \"$WT_WORKTREE_NAME:$WT_ACTION\" >> \"$WT_BASE_DIR/cleaned.log\"\n",
+    );
+
+    run_wt(&["clean", "--all", "--yes"], &repo, &xdg);
+
+    let log = fs::read_to_string(repo.join("cleaned.log")).unwrap();
+    assert!(log.contains("first:rm"), "{log}");
+    assert!(log.contains("second:rm"), "{log}");
+    assert!(!repo.join(".worktrees/first").exists());
+    assert!(!repo.join(".worktrees/second").exists());
+}
+
 #[test]
 fn global_git_dir_bare_repo_uses_existing_base_worktree() {
     let root = temp_dir("bare");

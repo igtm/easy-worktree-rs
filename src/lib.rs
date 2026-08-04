@@ -45,6 +45,33 @@ const POST_ADD_TEMPLATE: &str = r#"#!/bin/bash
 # echo "Setup completed!"
 "#;
 
+const PRE_RM_TEMPLATE: &str = r#"#!/bin/bash
+# Pre-rm hook for easy-worktree
+# This script is automatically executed before removing a worktree
+#
+# Available environment variables:
+#   WT_WORKTREE_PATH  - Path to the worktree about to be removed
+#   WT_WORKTREE_NAME  - Name of the worktree
+#   WT_BASE_DIR       - Path to the main repository directory
+#   WT_BRANCH         - Branch name
+#   WT_ACTION         - Action name (rm)
+#
+# The hook runs while the worktree still exists, with the worktree as the
+# working directory. A non-zero exit status is reported as a warning and does
+# not stop the removal, and the hook may run again if the removal itself
+# fails, so keep it idempotent.
+#
+# Example: Release resources that were created for this worktree
+#
+# echo "Cleaning up worktree: $WT_WORKTREE_NAME"
+#
+# # Remove artifacts that live outside the worktree directory, such as
+# # build outputs, containers, images, volumes or caches named after
+# # "$WT_WORKTREE_NAME".
+#
+# echo "Cleanup completed!"
+"#;
+
 #[derive(Debug, Clone)]
 struct CmdResult {
     stdout: String,
@@ -172,7 +199,7 @@ fn template(key: &str) -> (&'static str, &'static str) {
             "Could not find default branch (main/master)",
             "デフォルトブランチ (main/master) が見つかりません",
         ),
-        "running_hook" => ("Running post-add hook: {}", "post-add hook を実行中: {}"),
+        "running_hook" => ("Running {} hook: {}", "{} hook を実行中: {}"),
         "hook_not_executable" => (
             "Warning: hook is not executable: {}",
             "警告: hook が実行可能ではありません: {}",
@@ -1327,6 +1354,19 @@ fn default_config_updates() -> TomlValue {
     TomlValue::Table(root)
 }
 
+fn write_hook_template(wt_dir: &Path, hook_name: &str, template: &str) {
+    let hook_file = wt_dir.join(hook_name);
+    if hook_file.exists() {
+        return;
+    }
+    let _ = fs::write(&hook_file, template);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&hook_file, fs::Permissions::from_mode(0o755));
+    }
+}
+
 fn create_hook_template(base_dir: &Path) {
     let wt_home = require_wt_home_dir(base_dir);
     let wt_dir = wt_home.join(".wt");
@@ -1363,18 +1403,16 @@ fn create_hook_template(base_dir: &Path) {
         let _ = fs::write(&root_gitignore, format!("{}\n{}\n", entries[0], entries[1]));
     }
 
-    let hook_file = wt_dir.join("post-add");
-    if !hook_file.exists() {
-        let _ = fs::write(&hook_file, POST_ADD_TEMPLATE);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = fs::set_permissions(&hook_file, fs::Permissions::from_mode(0o755));
-        }
-    }
+    write_hook_template(&wt_dir, "post-add", POST_ADD_TEMPLATE);
+    write_hook_template(&wt_dir, "pre-rm", PRE_RM_TEMPLATE);
 
     let wt_gitignore = wt_dir.join(".gitignore");
-    let ignores = ["post-add.local", "config.local.toml", "last_selection"];
+    let ignores = [
+        "post-add.local",
+        "pre-rm.local",
+        "config.local.toml",
+        "last_selection",
+    ];
     if wt_gitignore.exists() {
         let mut content = fs::read_to_string(&wt_gitignore).unwrap_or_default();
         let mut updated = false;
@@ -1398,9 +1436,9 @@ fn create_hook_template(base_dir: &Path) {
     let readme_file = wt_dir.join("README.md");
     if !readme_file.exists() {
         let readme = if is_japanese() {
-            "# easy-worktree フック\n\nこのディレクトリには easy-worktree の設定と post-add フックが格納されています。\n"
+            "# easy-worktree フック\n\nこのディレクトリには easy-worktree の設定と、worktree 作成後に走る post-add フック、worktree 削除前に走る pre-rm フックが格納されています。\n"
         } else {
-            "# easy-worktree Hooks\n\nThis directory contains easy-worktree configuration and post-add hooks.\n"
+            "# easy-worktree Hooks\n\nThis directory contains easy-worktree configuration, the post-add hook that runs after a worktree is created, and the pre-rm hook that runs before a worktree is removed.\n"
         };
         let _ = fs::write(readme_file, readme);
     }
@@ -1479,7 +1517,35 @@ fn copy_setup_files(
 }
 
 fn run_post_add_hook(worktree_path: &Path, work_name: &str, base_dir: &Path, branch: Option<&str>) {
-    let hook_path = get_wt_dir(base_dir).join("post-add");
+    run_hook(
+        "post-add",
+        "add",
+        worktree_path,
+        work_name,
+        base_dir,
+        branch,
+    );
+}
+
+fn run_pre_rm_hook(worktree_path: &Path, work_name: &str, base_dir: &Path, branch: Option<&str>) {
+    run_hook("pre-rm", "rm", worktree_path, work_name, base_dir, branch);
+}
+
+/// Branch names are stored with an `"N/A"` placeholder when Git reports no
+/// branch, which should not leak into `WT_BRANCH`.
+fn hook_branch(branch: &str) -> Option<&str> {
+    (!branch.is_empty() && branch != "N/A").then_some(branch)
+}
+
+fn run_hook(
+    hook_name: &str,
+    action: &str,
+    worktree_path: &Path,
+    work_name: &str,
+    base_dir: &Path,
+    branch: Option<&str>,
+) {
+    let hook_path = get_wt_dir(base_dir).join(hook_name);
     if !hook_path.is_file() {
         return;
     }
@@ -1495,15 +1561,22 @@ fn run_post_add_hook(worktree_path: &Path, work_name: &str, base_dir: &Path, bra
         }
     }
 
-    eprintln!("{}", m1("running_hook", hook_path.display()));
+    eprintln!("{}", m2("running_hook", hook_name, hook_path.display()));
     let _ = io::stderr().flush();
+    // A worktree directory can already be gone (for example a stale entry that
+    // `wt clean` picks up), so fall back to the main repository.
+    let current_dir = if worktree_path.is_dir() {
+        worktree_path
+    } else {
+        base_dir
+    };
     let mut child = match Command::new(&hook_path)
-        .current_dir(worktree_path)
+        .current_dir(current_dir)
         .env("WT_WORKTREE_PATH", worktree_path)
         .env("WT_WORKTREE_NAME", work_name)
         .env("WT_BASE_DIR", base_dir)
         .env("WT_BRANCH", branch.unwrap_or(work_name))
-        .env("WT_ACTION", "add")
+        .env("WT_ACTION", action)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -3224,6 +3297,12 @@ fn cmd_remove(args: &[String]) {
         std::process::exit(1);
     };
     eprintln!("{}", m1("removing_worktree", &work_name));
+    run_pre_rm_hook(
+        &target.path,
+        &work_name,
+        &base_dir,
+        hook_branch(&target.branch),
+    );
     let mut cmd = vec!["git".into(), "worktree".into(), "remove".into()];
     cmd.extend(flags);
     cmd.push(target.path.display().to_string());
@@ -3563,13 +3642,9 @@ fn cmd_clean(args: &[String]) {
         }
     }
     for wt in targets {
-        eprintln!(
-            "{}",
-            m1(
-                "removing_worktree",
-                worktree_display_name(&base_dir, &wt.path)
-            )
-        );
+        let work_name = worktree_display_name(&base_dir, &wt.path);
+        eprintln!("{}", m1("removing_worktree", &work_name));
+        run_pre_rm_hook(&wt.path, &work_name, &base_dir, hook_branch(&wt.branch));
         let result = run_command(
             vec![
                 "git".into(),
