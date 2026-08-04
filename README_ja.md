@@ -6,7 +6,7 @@
 
 ![easy-worktree-rs hero](./hero.png)
 
-`easy-worktree-rs` は Git worktree を管理する `wt` コマンドを提供します。Python 版と同じコマンド体系を目指しており、現在のバージョンは `0.2.24` です。
+`easy-worktree-rs` は Git worktree を管理する `wt` コマンドを提供します。Python 版と同じコマンド体系を目指しており、現在のバージョンは `0.2.25` です。
 
 ## インストール
 
@@ -25,7 +25,7 @@ curl -fsSL https://raw.githubusercontent.com/igtm/easy-worktree-rs/main/install.
 バージョンを指定する場合:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/igtm/easy-worktree-rs/main/install.sh | sh -s -- -v=v0.2.24
+curl -fsSL https://raw.githubusercontent.com/igtm/easy-worktree-rs/main/install.sh | sh -s -- -v=v0.2.25
 ```
 
 Cargo で GitHub からインストールする場合:
@@ -154,6 +154,15 @@ wt pr co 123
 
 `wt init` は `.wt/` 以下に実行可能な hook テンプレートを作成します。
 hook は普通の実行可能スクリプトなので、shebang さえあれば言語は問いません。
+
+`.wt/` は gitignore しません。
+hook と共有設定が入るディレクトリであり、これらはチームでコミットしたいものだからです。
+ローカル専用のファイル（`*.local`、`last_selection`）は `.wt/.gitignore` が面倒を見ます。
+
+ルートの `.gitignore` を書き換えるのは `wt init` と `wt clone` だけで、
+追記するのも worktree ディレクトリの 1 行だけです。
+しかもそのディレクトリがリポジトリの内側にある場合に限ります。
+`../my-worktrees` のような外側の path は、書いても gitignore として機能しないためです。
 
 | Hook | 実行タイミング | 発火するコマンド |
 | --- | --- | --- |
