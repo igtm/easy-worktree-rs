@@ -1197,6 +1197,52 @@ fn pre_rm_hook_failure_does_not_block_removal() {
 
 #[cfg(unix)]
 #[test]
+fn add_skip_hook_keeps_setup_files_but_skips_post_add() {
+    let root = temp_dir("add-skip-hook");
+    let repo = root.join("repo");
+    let xdg = root.join("xdg");
+    init_repo(&repo);
+    run_wt(&["init"], &repo, &xdg);
+    fs::write(
+        repo.join(".wt/config.toml"),
+        "setup_files = [\"copied.txt\"]\n",
+    )
+    .unwrap();
+    fs::write(repo.join("copied.txt"), "copied\n").unwrap();
+
+    write_executable_script(
+        &repo.join(".wt/post-add"),
+        "#!/bin/sh\ntouch \"$WT_BASE_DIR/hook-ran-$WT_WORKTREE_NAME\"\n",
+    );
+
+    for flag in ["--skip-hook", "--no-hook"] {
+        let name = flag.trim_start_matches('-');
+        run_wt(&["add", name, flag], &repo, &xdg);
+        assert!(
+            repo.join(".worktrees")
+                .join(name)
+                .join("copied.txt")
+                .exists(),
+            "{flag} must still copy setup_files"
+        );
+        assert!(
+            !repo.join(format!("hook-ran-{name}")).exists(),
+            "{flag} must not run post-add"
+        );
+    }
+
+    // --skip-setup keeps skipping both, and a plain add still does both.
+    run_wt(&["add", "skipped", "--skip-setup"], &repo, &xdg);
+    assert!(!repo.join(".worktrees/skipped/copied.txt").exists());
+    assert!(!repo.join("hook-ran-skipped").exists());
+
+    run_wt(&["add", "full"], &repo, &xdg);
+    assert!(repo.join(".worktrees/full/copied.txt").exists());
+    assert!(repo.join("hook-ran-full").exists());
+}
+
+#[cfg(unix)]
+#[test]
 fn hook_command_runs_a_named_hook_without_removing_the_worktree() {
     let root = temp_dir("hook-cmd");
     let repo = root.join("repo");

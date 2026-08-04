@@ -6,7 +6,7 @@
 
 ![easy-worktree-rs hero](./hero.png)
 
-`easy-worktree-rs` は Git worktree を管理する `wt` コマンドを提供します。Python 版と同じコマンド体系を目指しており、現在のバージョンは `0.2.23` です。
+`easy-worktree-rs` は Git worktree を管理する `wt` コマンドを提供します。Python 版と同じコマンド体系を目指しており、現在のバージョンは `0.2.24` です。
 
 ## インストール
 
@@ -25,7 +25,7 @@ curl -fsSL https://raw.githubusercontent.com/igtm/easy-worktree-rs/main/install.
 バージョンを指定する場合:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/igtm/easy-worktree-rs/main/install.sh | sh -s -- -v=v0.2.23
+curl -fsSL https://raw.githubusercontent.com/igtm/easy-worktree-rs/main/install.sh | sh -s -- -v=v0.2.24
 ```
 
 Cargo で GitHub からインストールする場合:
@@ -47,7 +47,7 @@ cargo install --path . --locked
 ```bash
 wt clone (cn) [--bare] <repository_url> [dest_dir]
 wt init (in)
-wt add (ad) [<work_name> [<base_branch>]] [--skip-setup|--no-setup] [--select [<command>...]]
+wt add (ad) [<work_name> [<base_branch>]] [--skip-setup|--no-setup] [--skip-hook|--no-hook] [--select [<command>...]]
 wt list (li, ls) [--pr] [--quiet|-q] [--days N] [--merged] [--closed] [--all]
 wt diff (di, df) [<name>] [args...]
 wt config (cf) [--global|--local] [<key> [<value>]]
@@ -198,13 +198,26 @@ hook だけを走らせたい場合は `wt hook post-add` を使ってくださ�
 
 ### hook をスキップする
 
-`wt rm` と `wt clean` は `--skip-hook`（`--no-hook`）を受け付けます。
-`pre-rm` を実行せずに worktree を削除でき、`wt add` の `--skip-setup` と対になります。
+`wt add` `wt rm` `wt clean` は `--skip-hook`（`--no-hook`）を受け付け、hook を実行せずに動きます。
 
 ```bash
+wt add feature-1 --skip-hook       # setup_files はコピーするが post-add は実行しない
 wt rm feature-1 --skip-hook
 wt clean --all --yes --skip-hook
 ```
+
+`wt add` では `--skip-setup` より狭い範囲を指します。
+setup は「`setup_files` を worktree にコピーする」「`post-add` を実行する」の2段階であり、
+2つのフラグは、その全体を飛ばすか hook だけを飛ばすかを選べます。
+
+| | `setup_files` のコピー | `post-add` の実行 |
+| --- | --- | --- |
+| `wt add` | する | する |
+| `wt add --skip-hook` | する | しない |
+| `wt add --skip-setup` | しない | しない |
+
+hook 側が重い場合、たとえば依存のインストールや image のビルドをしている場合に効きます。
+worktree をすぐ使い始め、あとから `wt hook post-add` で追いつけます。
 
 ## パフォーマンス
 
