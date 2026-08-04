@@ -304,6 +304,7 @@ fn help_mentions_two_letter_aliases() {
         "rm/remove",
         "clean (cl)",
         "setup (su)",
+        "hook (ho)",
         "stash (st)",
         "pr add",
         "select (se, sl)",
@@ -818,6 +819,11 @@ fn two_letter_aliases_dispatch() {
     let completion = run_wt(&["cm", "bash"], &repo, &xdg);
     assert!(String::from_utf8_lossy(&completion.stdout).contains("complete -F"));
 
+    let hooks = run_wt(&["ho"], &repo, &xdg);
+    let hooks = String::from_utf8_lossy(&hooks.stdout);
+    assert!(hooks.contains("post-add"), "{hooks}");
+    assert!(hooks.contains("pre-rm"), "{hooks}");
+
     let doctor = run_wt(&["dr"], &repo, &xdg);
     assert!(String::from_utf8_lossy(&doctor.stdout).contains("easy-worktree doctor"));
 
@@ -1187,6 +1193,118 @@ fn pre_rm_hook_failure_does_not_block_removal() {
         !repo.join(".worktrees/doomed").exists(),
         "worktree removal was blocked by a failing hook"
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn hook_command_runs_a_named_hook_without_removing_the_worktree() {
+    let root = temp_dir("hook-cmd");
+    let repo = root.join("repo");
+    let xdg = root.join("xdg");
+    init_repo(&repo);
+    run_wt(&["init"], &repo, &xdg);
+    run_wt(&["add", "kept"], &repo, &xdg);
+
+    write_executable_script(
+        &repo.join(".wt/pre-rm"),
+        "#!/bin/sh\necho \"$WT_WORKTREE_NAME:$WT_ACTION:$PWD\" > \"$WT_BASE_DIR/hook.log\"\n",
+    );
+
+    // From the main repository, targeting a worktree by name.
+    run_wt(&["hook", "pre-rm", "kept"], &repo, &xdg);
+    let log = fs::read_to_string(repo.join("hook.log")).unwrap();
+    assert!(log.starts_with("kept:rm:"), "{log}");
+    assert!(
+        repo.join(".worktrees/kept").exists(),
+        "wt hook must not remove the worktree"
+    );
+
+    // From inside a worktree, with no name given.
+    fs::remove_file(repo.join("hook.log")).unwrap();
+    run_wt(&["hook", "pre-rm"], &repo.join(".worktrees/kept"), &xdg);
+    let log = fs::read_to_string(repo.join("hook.log")).unwrap();
+    assert!(log.starts_with("kept:rm:"), "{log}");
+}
+
+#[cfg(unix)]
+#[test]
+fn hook_command_lists_hooks_and_rejects_unknown_names() {
+    let root = temp_dir("hook-list");
+    let repo = root.join("repo");
+    let xdg = root.join("xdg");
+    init_repo(&repo);
+    run_wt(&["init"], &repo, &xdg);
+
+    let listed = run_wt(&["hook"], &repo, &xdg);
+    let stdout = String::from_utf8_lossy(&listed.stdout);
+    assert!(stdout.contains("post-add"), "{stdout}");
+    assert!(stdout.contains("pre-rm"), "{stdout}");
+    assert!(stdout.contains("WT_ACTION=add"), "{stdout}");
+    assert!(stdout.contains("WT_ACTION=rm"), "{stdout}");
+
+    let output = Command::new(wt_bin())
+        .args(["hook", "post-remove"])
+        .current_dir(&repo)
+        .env("LANG", "en")
+        .env("LC_ALL", "C")
+        .env("XDG_CONFIG_HOME", &xdg)
+        .output()
+        .unwrap();
+    assert!(!output.status.success(), "unknown hook should fail");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Unknown hook: post-remove"), "{stderr}");
+    assert!(stderr.contains("post-add, pre-rm"), "{stderr}");
+}
+
+#[cfg(unix)]
+#[test]
+fn rm_skip_hook_flag_bypasses_pre_rm_hook() {
+    for flag in ["--skip-hook", "--no-hook"] {
+        let root = temp_dir("pre-rm-skip");
+        let repo = root.join("repo");
+        let xdg = root.join("xdg");
+        init_repo(&repo);
+        run_wt(&["init"], &repo, &xdg);
+        run_wt(&["add", "doomed"], &repo, &xdg);
+
+        write_executable_script(
+            &repo.join(".wt/pre-rm"),
+            "#!/bin/sh\ntouch \"$WT_BASE_DIR/hook-ran\"\n",
+        );
+
+        let output = run_wt(&["rm", "--force", flag, "doomed"], &repo, &xdg);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            !stderr.contains("Running pre-rm hook"),
+            "{flag} did not skip the hook\n{stderr}"
+        );
+        assert!(
+            !repo.join("hook-ran").exists(),
+            "{flag} did not skip the hook"
+        );
+        assert!(!repo.join(".worktrees/doomed").exists());
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn clean_skip_hook_flag_bypasses_pre_rm_hook() {
+    let root = temp_dir("pre-rm-clean-skip");
+    let repo = root.join("repo");
+    let xdg = root.join("xdg");
+    init_repo(&repo);
+    run_wt(&["init"], &repo, &xdg);
+    run_wt(&["add", "first"], &repo, &xdg);
+
+    write_executable_script(
+        &repo.join(".wt/pre-rm"),
+        "#!/bin/sh\ntouch \"$WT_BASE_DIR/hook-ran\"\n",
+    );
+
+    run_wt(&["clean", "--all", "--yes", "--skip-hook"], &repo, &xdg);
+
+    assert!(!repo.join("hook-ran").exists(), "hook was not skipped");
+    assert!(!repo.join(".worktrees/first").exists());
 }
 
 #[cfg(unix)]

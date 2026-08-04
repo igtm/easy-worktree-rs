@@ -51,9 +51,10 @@ wt add (ad) [<work_name> [<base_branch>]] [--skip-setup|--no-setup] [--select [<
 wt list (li, ls) [--pr] [--quiet|-q] [--days N] [--merged] [--closed] [--all]
 wt diff (di, df) [<name>] [args...]
 wt config (cf) [--global|--local] [<key> [<value>]]
-wt rm/remove [<work_name>] [-f|--force]
-wt clean (cl) [--days N] [--merged] [--closed] [--all] [--yes|-y]
+wt rm/remove [<work_name>] [-f|--force] [--skip-hook|--no-hook]
+wt clean (cl) [--days N] [--merged] [--closed] [--all] [--yes|-y] [--skip-hook|--no-hook]
 wt setup (su)
+wt hook (ho) [<hook_name> [<work_name>]]
 wt stash (st) <work_name> [<base_branch>]
 wt pr add <number>
 wt select (se, sl) [<name>|-] [<command>...]
@@ -79,6 +80,7 @@ wt doctor (dr)
 | `rm` / `remove` | `rm` |
 | `clean` | `cl` |
 | `setup` | `su` |
+| `hook` | `ho` |
 | `stash` | `st` |
 | `pr` | `pr` |
 | `select` | `se`, `sl` |
@@ -177,6 +179,32 @@ hook の出力は stderr に流れ、hook は `wt` の stdin を継承しませ�
 終了コードが 0 以外の場合は警告として報告されるだけで、処理は止まりません。
 とくに `pre-rm` が失敗しても worktree は削除されます。
 また削除自体が失敗して再実行した場合は hook も再度走るため、`pre-rm` は冪等に保ってください。
+
+### hook を単体で実行する
+
+`wt hook` は、前後の処理を伴わずに hook だけを実行します。
+worktree の作成も削除もしないので、hook の動作確認や、直したあとの再実行に使えます。
+
+```bash
+wt hook                     # hook の一覧と実行可否を表示
+wt hook pre-rm              # いま居る worktree で pre-rm を実行
+wt hook pre-rm feature-1    # worktree を指定して実行
+wt hook post-add
+```
+
+`wt setup` はこれとは別物で、従来どおりの動作です。
+`setup_files` を worktree にコピーし、**そのあとで** `post-add` を実行します。
+hook だけを走らせたい場合は `wt hook post-add` を使ってください。
+
+### hook をスキップする
+
+`wt rm` と `wt clean` は `--skip-hook`（`--no-hook`）を受け付けます。
+`pre-rm` を実行せずに worktree を削除でき、`wt add` の `--skip-setup` と対になります。
+
+```bash
+wt rm feature-1 --skip-hook
+wt clean --all --yes --skip-hook
+```
 
 ## パフォーマンス
 

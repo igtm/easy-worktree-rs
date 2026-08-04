@@ -72,6 +72,28 @@ const PRE_RM_TEMPLATE: &str = r#"#!/bin/bash
 # echo "Cleanup completed!"
 "#;
 
+/// Every hook `wt` knows about: file name under `.wt/`, the `WT_ACTION` value
+/// it is invoked with, and the template written by `wt init`.
+const HOOKS: [(&str, &str, &str); 2] = [
+    ("post-add", "add", POST_ADD_TEMPLATE),
+    ("pre-rm", "rm", PRE_RM_TEMPLATE),
+];
+
+fn hook_action(hook_name: &str) -> Option<&'static str> {
+    HOOKS
+        .iter()
+        .find(|(name, _, _)| *name == hook_name)
+        .map(|(_, action, _)| *action)
+}
+
+fn hook_names() -> String {
+    HOOKS
+        .iter()
+        .map(|(name, _, _)| *name)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 #[derive(Debug, Clone)]
 struct CmdResult {
     stdout: String,
@@ -208,9 +230,22 @@ fn template(key: &str) -> (&'static str, &'static str) {
             "Warning: hook exited with code {}",
             "警告: hook が終了コード {} で終了しました",
         ),
+        "usage_hook" => (
+            "Usage: wt hook (ho) [<hook_name> [<work_name>]]",
+            "使用方法: wt hook (ho) [<hook 名> [<作業名>]]",
+        ),
+        "unknown_hook" => (
+            "Unknown hook: {} (available: {})",
+            "不明な hook です: {} (利用可能: {})",
+        ),
+        "hook_not_found" => ("Hook is not defined: {}", "hook が定義されていません: {}"),
+        "available_hooks" => ("Available hooks:", "利用可能な hook:"),
+        "hook_state_ready" => ("ready", "実行可能"),
+        "hook_state_not_executable" => ("not executable", "実行権限なし"),
+        "hook_state_missing" => ("not created", "未作成"),
         "usage_clean" => (
-            "Usage: wt clean (cl) [--days N] [--merged] [--closed] [--all] [--yes|-y]",
-            "使用方法: wt clean (cl) [--days N] [--merged] [--closed] [--all] [--yes|-y]",
+            "Usage: wt clean (cl) [--days N] [--merged] [--closed] [--all] [--yes|-y] [--skip-hook|--no-hook]",
+            "使用方法: wt clean (cl) [--days N] [--merged] [--closed] [--all] [--yes|-y] [--skip-hook|--no-hook]",
         ),
         "no_clean_targets" => (
             "No worktrees to clean",
@@ -1403,8 +1438,9 @@ fn create_hook_template(base_dir: &Path) {
         let _ = fs::write(&root_gitignore, format!("{}\n{}\n", entries[0], entries[1]));
     }
 
-    write_hook_template(&wt_dir, "post-add", POST_ADD_TEMPLATE);
-    write_hook_template(&wt_dir, "pre-rm", PRE_RM_TEMPLATE);
+    for (hook_name, _, template) in HOOKS {
+        write_hook_template(&wt_dir, hook_name, template);
+    }
 
     let wt_gitignore = wt_dir.join(".gitignore");
     let ignores = [
@@ -1537,6 +1573,20 @@ fn hook_branch(branch: &str) -> Option<&str> {
     (!branch.is_empty() && branch != "N/A").then_some(branch)
 }
 
+fn hook_is_executable(hook_path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::metadata(hook_path)
+            .map(|metadata| metadata.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false)
+    }
+    #[cfg(not(unix))]
+    {
+        hook_path.is_file()
+    }
+}
+
 fn run_hook(
     hook_name: &str,
     action: &str,
@@ -1549,16 +1599,9 @@ fn run_hook(
     if !hook_path.is_file() {
         return;
     }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if fs::metadata(&hook_path)
-            .map(|metadata| metadata.permissions().mode() & 0o111 == 0)
-            .unwrap_or(true)
-        {
-            eprintln!("{}", m1("hook_not_executable", hook_path.display()));
-            return;
-        }
+    if !hook_is_executable(&hook_path) {
+        eprintln!("{}", m1("hook_not_executable", hook_path.display()));
+        return;
     }
 
     eprintln!("{}", m2("running_hook", hook_name, hook_path.display()));
@@ -3272,9 +3315,12 @@ fn cmd_remove(args: &[String]) {
         .collect::<Vec<_>>();
     let mut flags = Vec::new();
     let mut work_name: Option<String> = None;
+    let mut skip_hook = false;
     for arg in args {
         if arg == "-f" || arg == "--force" {
             flags.push(arg.clone());
+        } else if arg == "--skip-hook" || arg == "--no-hook" {
+            skip_hook = true;
         } else if work_name.is_none() {
             work_name = Some(arg.clone());
         }
@@ -3297,12 +3343,14 @@ fn cmd_remove(args: &[String]) {
         std::process::exit(1);
     };
     eprintln!("{}", m1("removing_worktree", &work_name));
-    run_pre_rm_hook(
-        &target.path,
-        &work_name,
-        &base_dir,
-        hook_branch(&target.branch),
-    );
+    if !skip_hook {
+        run_pre_rm_hook(
+            &target.path,
+            &work_name,
+            &base_dir,
+            hook_branch(&target.branch),
+        );
+    }
     let mut cmd = vec!["git".into(), "worktree".into(), "remove".into()];
     cmd.extend(flags);
     cmd.push(target.path.display().to_string());
@@ -3591,19 +3639,102 @@ fn cmd_setup(_args: &[String]) {
     } else {
         worktree_display_name(&base_dir, &target_path)
     };
+    let branch_name = current_branch_of(&target_path);
+    run_post_add_hook(&target_path, &work_name, &base_dir, branch_name.as_deref());
+}
+
+fn current_branch_of(path: &Path) -> Option<String> {
     let branch = run_command(
         vec!["git".into(), "branch".into(), "--show-current".into()],
-        Some(&target_path),
+        Some(path),
         false,
         false,
     );
-    let branch_name = if branch.status == 0 {
-        let branch = branch.stdout.trim().to_string();
-        (!branch.is_empty()).then_some(branch)
-    } else {
-        None
+    if branch.status != 0 {
+        return None;
+    }
+    let branch = branch.stdout.trim().to_string();
+    (!branch.is_empty()).then_some(branch)
+}
+
+fn list_hooks(base_dir: &Path) {
+    let wt_dir = get_wt_dir(base_dir);
+    println!("{}", m0("available_hooks"));
+    for (hook_name, action, _) in HOOKS {
+        let hook_path = wt_dir.join(hook_name);
+        let state = if !hook_path.is_file() {
+            m0("hook_state_missing")
+        } else if !hook_is_executable(&hook_path) {
+            m0("hook_state_not_executable")
+        } else {
+            m0("hook_state_ready")
+        };
+        println!(
+            "  {hook_name:<10} WT_ACTION={action:<4} [{state}] {}",
+            hook_path.display()
+        );
+    }
+}
+
+fn cmd_hook(args: &[String]) {
+    let Some(base_dir) = find_base_dir() else {
+        fatal(m1("error", m0("base_not_found")));
     };
-    run_post_add_hook(&target_path, &work_name, &base_dir, branch_name.as_deref());
+    let Some(hook_name) = args.first() else {
+        list_hooks(&base_dir);
+        return;
+    };
+    if hook_name == "-h" || hook_name == "--help" {
+        println!("{}", m0("usage_hook"));
+        list_hooks(&base_dir);
+        return;
+    }
+    let Some(action) = hook_action(hook_name) else {
+        eprintln!(
+            "{}",
+            m1("error", m2("unknown_hook", hook_name, hook_names()))
+        );
+        std::process::exit(1);
+    };
+
+    let (target_path, work_name) = match args.get(1) {
+        Some(name) => {
+            let worktrees = get_named_worktrees(&base_dir);
+            let found = worktrees
+                .iter()
+                .find(|wt| wt.name == *name || wt.path.to_string_lossy() == *name);
+            let Some(wt) = found else {
+                eprintln!("{}", m1("error", m1("select_not_found", name)));
+                let names = worktrees
+                    .iter()
+                    .map(|wt| wt.name.clone())
+                    .collect::<Vec<_>>();
+                suggest_worktree_name_from_names(&names, name);
+                std::process::exit(1);
+            };
+            (wt.path.clone(), wt.name.clone())
+        }
+        None => {
+            let path = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            let name = worktree_display_name(&base_dir, &path);
+            (path, name)
+        }
+    };
+
+    let hook_path = get_wt_dir(&base_dir).join(hook_name);
+    if !hook_path.is_file() {
+        eprintln!("{}", m1("error", m1("hook_not_found", hook_path.display())));
+        std::process::exit(1);
+    }
+    let branch = current_branch_of(&target_path);
+    run_hook(
+        hook_name,
+        action,
+        &target_path,
+        &work_name,
+        &base_dir,
+        branch.as_deref(),
+    );
 }
 
 fn cmd_clean(args: &[String]) {
@@ -3612,6 +3743,7 @@ fn cmd_clean(args: &[String]) {
     };
     let (clean_all, _, _, _) = parse_clean_filter_options(args);
     let force_yes = args.iter().any(|a| a == "--yes" || a == "-y");
+    let skip_hook = args.iter().any(|a| a == "--skip-hook" || a == "--no-hook");
     let worktrees = get_worktree_info(&base_dir);
     let targets = resolve_clean_targets(&base_dir, &worktrees, args);
     if targets.is_empty() {
@@ -3644,7 +3776,9 @@ fn cmd_clean(args: &[String]) {
     for wt in targets {
         let work_name = worktree_display_name(&base_dir, &wt.path);
         eprintln!("{}", m1("removing_worktree", &work_name));
-        run_pre_rm_hook(&wt.path, &work_name, &base_dir, hook_branch(&wt.branch));
+        if !skip_hook {
+            run_pre_rm_hook(&wt.path, &work_name, &base_dir, hook_branch(&wt.branch));
+        }
         let result = run_command(
             vec![
                 "git".into(),
@@ -3710,11 +3844,17 @@ fn bash_completion_script() -> &'static str {
         add|ad)
             COMPREPLY=( $(compgen -W "--skip-setup --no-setup --select ${wt_names}" -- "${cur}") )
             ;;
-        select|se|sl|co|checkout|run|ru|rm|remove)
+        rm|remove)
+            COMPREPLY=( $(compgen -W "-f --force --skip-hook --no-hook ${wt_names}" -- "${cur}") )
+            ;;
+        select|se|sl|co|checkout|run|ru)
             COMPREPLY=( $(compgen -W "${wt_names}" -- "${cur}") )
             ;;
         clean|cl)
-            COMPREPLY=( $(compgen -W "--days --merged --closed --all --yes -y" -- "${cur}") )
+            COMPREPLY=( $(compgen -W "--days --merged --closed --all --yes -y --skip-hook --no-hook" -- "${cur}") )
+            ;;
+        hook|ho)
+            COMPREPLY=( $(compgen -W "post-add pre-rm ${wt_names}" -- "${cur}") )
             ;;
         list|li|ls)
             COMPREPLY=( $(compgen -W "--pr --quiet -q --days --merged --closed --all --sort --asc --desc created last-commit name branch" -- "${cur}") )
@@ -3797,15 +3937,19 @@ fn show_help() {
         );
         println!(
             "  {:<55} - worktree を削除",
-            "rm/remove [<作業名>] [-f|--force]"
+            "rm/remove [<作業名>] [-f|--force] [--skip-hook|--no-hook]"
         );
         println!(
             "  {:<55} - 不要な worktree を削除",
-            "clean (cl) [--days N] [--merged] [--closed] [--all] [--yes|-y]"
+            "clean (cl) [--days N] [--merged] [--closed] [--all] [--yes|-y] [--skip-hook|--no-hook]"
         );
         println!(
-            "  {:<55} - 作業ディレクトリを初期化（ファイルコピー・フック実行）",
+            "  {:<55} - 作業ディレクトリを初期化（setup_files をコピーし post-add を実行）",
             "setup (su)"
+        );
+        println!(
+            "  {:<55} - hook を単体で実行（引数なしで一覧表示）",
+            "hook (ho) [<hook 名> [<作業名>]]"
         );
         println!(
             "  {:<55} - コマンドを指定 worktree で実行",
@@ -3868,15 +4012,19 @@ fn show_help() {
         );
         println!(
             "  {:<55} - Remove a worktree",
-            "rm/remove [<work_name>] [-f|--force]"
+            "rm/remove [<work_name>] [-f|--force] [--skip-hook|--no-hook]"
         );
         println!(
             "  {:<55} - Remove unused/merged worktrees",
-            "clean (cl) [--days N] [--merged] [--closed] [--all] [--yes|-y]"
+            "clean (cl) [--days N] [--merged] [--closed] [--all] [--yes|-y] [--skip-hook|--no-hook]"
         );
         println!(
-            "  {:<55} - Setup worktree (copy files and run hooks)",
+            "  {:<55} - Setup worktree (copy setup_files and run post-add)",
             "setup (su)"
+        );
+        println!(
+            "  {:<55} - Run a hook on its own (lists hooks when given no name)",
+            "hook (ho) [<hook_name> [<work_name>]]"
         );
         println!(
             "  {:<55} - Run a command in a worktree",
@@ -4125,6 +4273,10 @@ pub fn main_entry() -> i32 {
         }
         "setup" | "su" => {
             cmd_setup(args);
+            0
+        }
+        "hook" | "ho" => {
+            cmd_hook(args);
             0
         }
         "stash" | "st" => {

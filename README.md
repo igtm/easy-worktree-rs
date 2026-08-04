@@ -51,9 +51,10 @@ wt add (ad) [<work_name> [<base_branch>]] [--skip-setup|--no-setup] [--select [<
 wt list (li, ls) [--pr] [--quiet|-q] [--days N] [--merged] [--closed] [--all]
 wt diff (di, df) [<name>] [args...]
 wt config (cf) [--global|--local] [<key> [<value>]]
-wt rm/remove [<work_name>] [-f|--force]
-wt clean (cl) [--days N] [--merged] [--closed] [--all] [--yes|-y]
+wt rm/remove [<work_name>] [-f|--force] [--skip-hook|--no-hook]
+wt clean (cl) [--days N] [--merged] [--closed] [--all] [--yes|-y] [--skip-hook|--no-hook]
 wt setup (su)
+wt hook (ho) [<hook_name> [<work_name>]]
 wt stash (st) <work_name> [<base_branch>]
 wt pr add <number>
 wt select (se, sl) [<name>|-] [<command>...]
@@ -80,6 +81,7 @@ compatibility.
 | `rm` / `remove` | `rm` |
 | `clean` | `cl` |
 | `setup` | `su` |
+| `hook` | `ho` |
 | `stash` | `st` |
 | `pr` | `pr` |
 | `select` | `se`, `sl` |
@@ -180,6 +182,33 @@ A non-zero exit status is reported as a warning and does not stop the
 operation; in particular a failing `pre-rm` still removes the worktree, and the
 hook runs again on a retry when the removal itself fails, so keep `pre-rm`
 idempotent.
+
+### Running a hook on its own
+
+`wt hook` runs a single hook without the surrounding operation. It never
+creates or removes a worktree, which makes it the way to test a hook or to
+re-run one after fixing it.
+
+```bash
+wt hook                     # list hooks and whether each one is runnable
+wt hook pre-rm              # run pre-rm for the worktree you are in
+wt hook pre-rm feature-1    # run pre-rm for a named worktree
+wt hook post-add
+```
+
+`wt setup` is a different thing and stays as it is: it copies `setup_files`
+into the worktree **and then** runs `post-add`. Use `wt hook post-add` when you
+want the hook alone.
+
+### Skipping a hook
+
+`wt rm` and `wt clean` accept `--skip-hook` (or `--no-hook`) to remove a
+worktree without running `pre-rm`, mirroring `--skip-setup` on `wt add`.
+
+```bash
+wt rm feature-1 --skip-hook
+wt clean --all --yes --skip-hook
+```
 
 ## Performance
 
