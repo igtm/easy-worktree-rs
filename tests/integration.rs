@@ -1099,6 +1099,78 @@ fn setup_hook_uses_worktree_name_when_detached() {
     );
 }
 
+#[test]
+fn init_ignores_the_worktrees_dir_but_not_the_wt_dir() {
+    let root = temp_dir("gitignore-init");
+    let repo = root.join("repo");
+    let xdg = root.join("xdg");
+    init_repo(&repo);
+    run_wt(&["init"], &repo, &xdg);
+
+    let ignore = fs::read_to_string(repo.join(".gitignore")).unwrap();
+    let lines: Vec<_> = ignore.lines().map(str::trim).collect();
+    assert!(lines.contains(&".worktrees/"), "{ignore}");
+    assert!(
+        !lines.contains(&".wt/"),
+        ".wt/ holds shared hooks and must stay committable\n{ignore}"
+    );
+
+    // Running init again must not append a duplicate.
+    run_wt(&["init"], &repo, &xdg);
+    let ignore = fs::read_to_string(repo.join(".gitignore")).unwrap();
+    assert_eq!(
+        ignore.lines().filter(|l| l.trim() == ".worktrees/").count(),
+        1,
+        "{ignore}"
+    );
+}
+
+#[test]
+fn only_init_and_clone_touch_the_root_gitignore() {
+    let root = temp_dir("gitignore-scope");
+    let repo = root.join("repo");
+    let xdg = root.join("xdg");
+    init_repo(&repo);
+    run_wt(&["init"], &repo, &xdg);
+
+    // Anything init wrote is the baseline; no later command may change it.
+    fs::write(repo.join(".gitignore"), "handwritten\n").unwrap();
+
+    run_wt(&["add", "one"], &repo, &xdg);
+    run_wt(&["setup"], &repo, &xdg);
+    run_wt(&["select", "one"], &repo, &xdg);
+    run_wt(&["rm", "--force", "one"], &repo, &xdg);
+
+    assert_eq!(
+        fs::read_to_string(repo.join(".gitignore")).unwrap(),
+        "handwritten\n",
+        "only init and clone may edit the root .gitignore"
+    );
+}
+
+#[test]
+fn worktrees_dir_outside_the_repository_is_not_written_to_gitignore() {
+    let root = temp_dir("gitignore-outside");
+    let repo = root.join("repo");
+    let xdg = root.join("xdg");
+    init_repo(&repo);
+    run_wt(&["init"], &repo, &xdg);
+
+    fs::write(repo.join(".gitignore"), "").unwrap();
+    fs::write(
+        repo.join(".wt/config.toml"),
+        "worktrees_dir = \"../repo-worktrees\"\n",
+    )
+    .unwrap();
+    run_wt(&["init"], &repo, &xdg);
+
+    let ignore = fs::read_to_string(repo.join(".gitignore")).unwrap();
+    assert!(
+        !ignore.contains("repo-worktrees"),
+        "a path outside the repository can never match, so it must not be written\n{ignore}"
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn init_creates_executable_pre_rm_hook_template() {

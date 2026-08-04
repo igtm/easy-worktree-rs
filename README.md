@@ -6,7 +6,7 @@ Rust port of [`easy-worktree`](https://github.com/igtm/easy-worktree).
 
 ![easy-worktree-rs hero](./hero.png)
 
-`easy-worktree-rs` provides the `wt` command for managing Git worktrees with the same command surface as the Python package. The current version is `0.2.24`.
+`easy-worktree-rs` provides the `wt` command for managing Git worktrees with the same command surface as the Python package. The current version is `0.2.25`.
 
 ## Install
 
@@ -25,7 +25,7 @@ curl -fsSL https://raw.githubusercontent.com/igtm/easy-worktree-rs/main/install.
 Install a specific release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/igtm/easy-worktree-rs/main/install.sh | sh -s -- -v=v0.2.24
+curl -fsSL https://raw.githubusercontent.com/igtm/easy-worktree-rs/main/install.sh | sh -s -- -v=v0.2.25
 ```
 
 Install from GitHub with Cargo:
@@ -155,6 +155,13 @@ wt pr co 123
 
 `wt init` creates executable hook templates under `.wt/`. Each hook is an
 ordinary executable script, so any language works as long as it has a shebang.
+
+`.wt/` is not gitignored. It holds the hooks and the shared config, which are
+what a team commits; the local-only files inside it (`*.local`,
+`last_selection`) are covered by `.wt/.gitignore`. Only `wt init` and
+`wt clone` edit the repository's root `.gitignore`, and only to add the
+worktrees directory — and only when that directory is actually inside the
+repository, since a path like `../my-worktrees` could never match anyway.
 
 | Hook | Runs | Triggered by |
 | --- | --- | --- |

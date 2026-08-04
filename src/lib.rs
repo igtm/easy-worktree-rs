@@ -1402,6 +1402,46 @@ fn write_hook_template(wt_dir: &Path, hook_name: &str, template: &str) {
     }
 }
 
+/// Add the worktrees directory to the repository's root `.gitignore`.
+///
+/// Only `wt init` and `wt clone` call this — setting up a repository is an
+/// explicit act, and the other commands have no business editing a tracked
+/// file as a side effect.
+///
+/// `.wt/` itself is deliberately left out. It holds the hooks and the shared
+/// config, which are exactly what a team wants to commit; the local-only
+/// entries inside it are covered by `.wt/.gitignore`.
+fn ensure_worktrees_dir_ignored(base_dir: &Path) {
+    let wt_home = require_wt_home_dir(base_dir);
+    let config = load_config(base_dir);
+    let worktrees_dir_name = config_get_str(&config, "worktrees_dir", ".worktrees");
+
+    // A worktrees directory outside the repository (`../foo`, or an absolute
+    // path) can never be matched by this .gitignore, so writing it in would be
+    // noise the reader has to disprove.
+    let path = Path::new(&worktrees_dir_name);
+    if worktrees_dir_name.is_empty() || path.is_absolute() || worktrees_dir_name.starts_with("..") {
+        return;
+    }
+
+    let entry = format!("{}/", worktrees_dir_name.trim_end_matches('/'));
+    let root_gitignore = wt_home.join(".gitignore");
+    let mut content = if root_gitignore.exists() {
+        fs::read_to_string(&root_gitignore).unwrap_or_default()
+    } else {
+        String::new()
+    };
+    if content.lines().any(|line| line.trim() == entry) {
+        return;
+    }
+    if !content.is_empty() && !content.ends_with('\n') {
+        content.push('\n');
+    }
+    content.push_str(&entry);
+    content.push('\n');
+    let _ = fs::write(&root_gitignore, content);
+}
+
 fn create_hook_template(base_dir: &Path) {
     let wt_home = require_wt_home_dir(base_dir);
     let wt_dir = wt_home.join(".wt");
@@ -1412,30 +1452,6 @@ fn create_hook_template(base_dir: &Path) {
     let config_file = wt_dir.join("config.toml");
     if !config_file.exists() {
         save_config(base_dir, default_config_updates());
-    }
-
-    let config = load_config(base_dir);
-    let worktrees_dir_name = config_get_str(&config, "worktrees_dir", ".worktrees");
-    let root_gitignore = wt_home.join(".gitignore");
-    let entries = [".wt/".to_string(), format!("{worktrees_dir_name}/")];
-    if root_gitignore.exists() {
-        let mut content = fs::read_to_string(&root_gitignore).unwrap_or_default();
-        let mut updated = false;
-        for entry in entries {
-            if !content.contains(&entry) {
-                if !content.is_empty() && !content.ends_with('\n') {
-                    content.push('\n');
-                }
-                content.push_str(&entry);
-                content.push('\n');
-                updated = true;
-            }
-        }
-        if updated {
-            let _ = fs::write(&root_gitignore, content);
-        }
-    } else {
-        let _ = fs::write(&root_gitignore, format!("{}\n{}\n", entries[0], entries[1]));
     }
 
     for (hook_name, _, template) in HOOKS {
@@ -1708,6 +1724,7 @@ fn cmd_clone(args: &[String]) {
         ensure_base_worktree_for_bare(&dest_dir);
     }
     create_hook_template(&dest_dir);
+    ensure_worktrees_dir_ignored(&dest_dir);
 }
 
 fn cmd_init(_args: &[String]) {
@@ -1718,6 +1735,7 @@ fn cmd_init(_args: &[String]) {
         ensure_base_worktree_for_bare(&base_dir);
     }
     create_hook_template(&base_dir);
+    ensure_worktrees_dir_ignored(&base_dir);
 }
 
 /// Resolve a start-point ref to a commit hash when it looks like a remote
