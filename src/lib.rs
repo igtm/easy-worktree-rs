@@ -9,6 +9,7 @@ use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use toml::Value as TomlValue;
 use toml::map::Map as TomlMap;
@@ -121,10 +122,7 @@ struct WorktreeInfo {
     branch: String,
     created: Option<NaiveDateTime>,
     last_commit: Option<NaiveDateTime>,
-    is_clean: bool,
-    has_untracked: bool,
-    insertions: usize,
-    deletions: usize,
+    changes: ChangeScan,
     pr_info: String,
     reason: String,
 }
@@ -174,8 +172,8 @@ fn template(key: &str) -> (&'static str, &'static str) {
             "使用方法: wt config (cf) [--global|--local] [<キー> [<値>]]",
         ),
         "usage_list" => (
-            "Usage: wt list (li, ls) [--pr] [--quiet|-q] [--days N] [--merged] [--closed] [--all] [--sort created|last-commit|name|branch] [--asc|--desc]",
-            "使用方法: wt list (li, ls) [--pr] [--quiet|-q] [--days N] [--merged] [--closed] [--all] [--sort created|last-commit|name|branch] [--asc|--desc]",
+            "Usage: wt list (li, ls) [--changes|-c] [--pr] [--quiet|-q] [--days N] [--merged] [--closed] [--all] [--sort created|last-commit|name|branch] [--asc|--desc]",
+            "使用方法: wt list (li, ls) [--changes|-c] [--pr] [--quiet|-q] [--days N] [--merged] [--closed] [--all] [--sort created|last-commit|name|branch] [--asc|--desc]",
         ),
         "usage_run" => (
             "Usage: wt run (ru) <name> <command>...",
@@ -266,6 +264,7 @@ fn template(key: &str) -> (&'static str, &'static str) {
         "created_at" => ("Created", "作成日時"),
         "last_commit" => ("Last Commit", "最終コミット"),
         "changes_label" => ("Changes", "変更"),
+        "status_label" => ("Status", "状態"),
         "usage_pr" => ("Usage: wt pr add <number>", "使用方法: wt pr add <number>"),
         "usage_setup" => ("Usage: wt setup (su)", "使用方法: wt setup (su)"),
         "usage_stash" => (
@@ -1128,6 +1127,16 @@ fn config_setup_files(config: &TomlValue) -> Vec<String> {
         Some(TomlValue::String(item)) if !item.is_empty() => vec![item.clone()],
         _ => Vec::new(),
     }
+}
+
+/// Restores the older default, where `wt list` always scanned working trees
+/// for changes. Off by default because that scan dominates the runtime.
+fn config_list_changes(config: &TomlValue) -> bool {
+    config
+        .get("list")
+        .and_then(|v| v.get("changes"))
+        .and_then(TomlValue::as_bool)
+        .unwrap_or(false)
 }
 
 fn config_diff_tool(config: &TomlValue) -> String {
@@ -2435,7 +2444,163 @@ fn get_last_commit_times(base_dir: &Path, heads: &[String]) -> HashMap<String, N
         .collect()
 }
 
-fn get_worktree_info(base_dir: &Path) -> Vec<WorktreeInfo> {
+#[derive(Debug, Clone, Copy)]
+struct ChangeStat {
+    is_clean: bool,
+    has_untracked: bool,
+    insertions: usize,
+    deletions: usize,
+}
+
+/// The three states a working-tree scan can be in. `Skipped` is a real answer,
+/// not a zero value: it says nobody looked, which is different from looking and
+/// finding nothing. Keeping them apart is what stops an unscanned worktree from
+/// being mistaken for a clean one by `wt clean`.
+#[derive(Debug, Clone, Copy, Default)]
+enum ChangeScan {
+    #[default]
+    Skipped,
+    Failed,
+    Scanned(ChangeStat),
+}
+
+impl ChangeScan {
+    fn stat(self) -> Option<ChangeStat> {
+        match self {
+            ChangeScan::Scanned(stat) => Some(stat),
+            _ => None,
+        }
+    }
+
+    /// Only a completed scan can call a worktree clean. Skipped and failed both
+    /// answer "no", so a caller that never scanned can never delete anything.
+    fn is_clean(self) -> bool {
+        matches!(self, ChangeScan::Scanned(stat) if stat.is_clean)
+    }
+}
+
+/// Two `git` invocations that each walk the whole working tree. This is by far
+/// the most expensive thing `wt list` does, which is why callers opt into it.
+fn scan_changes(path: &Path) -> ChangeScan {
+    let status = run_command(
+        vec!["git".into(), "status".into(), "--porcelain".into()],
+        Some(path),
+        false,
+        false,
+    );
+    if status.status != 0 {
+        return ChangeScan::Failed;
+    }
+
+    let diff = run_command(
+        vec![
+            "git".into(),
+            "diff".into(),
+            "HEAD".into(),
+            "--shortstat".into(),
+        ],
+        Some(path),
+        false,
+        false,
+    );
+    if diff.status != 0 {
+        return ChangeScan::Failed;
+    }
+    let shortstat = diff.stdout.trim();
+
+    ChangeScan::Scanned(ChangeStat {
+        is_clean: status.stdout.trim().is_empty(),
+        has_untracked: status.stdout.contains("??"),
+        insertions: parse_shortstat_count(shortstat, "insertion"),
+        deletions: parse_shortstat_count(shortstat, "deletion"),
+    })
+}
+
+/// The scan is `lstat`-bound rather than CPU-bound, so it stops scaling well
+/// past a handful of workers and gets slower beyond that. Measured on a
+/// 12-core machine over ~100 worktrees, 8 was the floor; `WT_SCAN_WORKERS`
+/// overrides it for unusual disks.
+fn scan_worker_count() -> usize {
+    env::var("WT_SCAN_WORKERS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or_else(|| {
+            thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(4)
+                .clamp(1, 8)
+        })
+}
+
+/// Scans every path concurrently and returns one result per input, in input
+/// order. Each worker keeps its own results and hands them back on join, so
+/// there is no shared buffer that a panicking worker could take down with it.
+fn scan_changes_parallel(paths: &[PathBuf], workers: usize) -> Vec<ChangeScan> {
+    let workers = workers.min(paths.len());
+    if workers <= 1 {
+        return paths.iter().map(|path| scan_changes(path)).collect();
+    }
+
+    let next = AtomicUsize::new(0);
+    let batches: Vec<Vec<(usize, ChangeScan)>> = thread::scope(|scope| {
+        let handles = (0..workers)
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut mine = Vec::new();
+                    loop {
+                        let idx = next.fetch_add(1, Ordering::Relaxed);
+                        let Some(path) = paths.get(idx) else {
+                            break;
+                        };
+                        mine.push((idx, scan_changes(path)));
+                    }
+                    mine
+                })
+            })
+            .collect::<Vec<_>>();
+        handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap_or_default())
+            .collect()
+    });
+
+    // A worker that panicked contributes nothing, so its slots stay `Skipped`
+    // rather than silently reading as "scanned and clean".
+    let mut scans = vec![ChangeScan::Skipped; paths.len()];
+    for (idx, scan) in batches.into_iter().flatten() {
+        scans[idx] = scan;
+    }
+    scans
+}
+
+/// Returns one scan per worktree, positionally aligned with `worktrees`.
+/// Worktrees that are already known to be gone are reported as `Skipped`
+/// without spawning `git` for them.
+fn scan_worktree_changes(worktrees: &[WorktreeInfo], workers: usize) -> Vec<ChangeScan> {
+    let targets = worktrees
+        .iter()
+        .enumerate()
+        .filter(|(_, wt)| wt.reason.is_empty())
+        .map(|(idx, wt)| (idx, wt.path.clone()))
+        .collect::<Vec<_>>();
+    let paths = targets
+        .iter()
+        .map(|(_, path)| path.clone())
+        .collect::<Vec<_>>();
+
+    let mut scans = vec![ChangeScan::Skipped; worktrees.len()];
+    for ((idx, _), scan) in targets.iter().zip(scan_changes_parallel(&paths, workers)) {
+        scans[*idx] = scan;
+    }
+    scans
+}
+
+/// `with_changes` controls whether the working-tree scan runs. Skipping it
+/// turns `wt list` from tens of seconds into a fraction of one on a repository
+/// with many worktrees, so anything that does not read `changes` should pass
+/// `false`.
+fn get_worktree_info(base_dir: &Path, with_changes: bool) -> Vec<WorktreeInfo> {
     let entries = get_worktree_entries(base_dir);
     let mut worktrees = entries
         .into_iter()
@@ -2445,10 +2610,7 @@ fn get_worktree_info(base_dir: &Path) -> Vec<WorktreeInfo> {
             branch: entry.branch.unwrap_or_else(|| "N/A".into()),
             created: None,
             last_commit: None,
-            is_clean: false,
-            has_untracked: false,
-            insertions: 0,
-            deletions: 0,
+            changes: ChangeScan::Skipped,
             pr_info: String::new(),
             reason: String::new(),
         })
@@ -2473,44 +2635,21 @@ fn get_worktree_info(base_dir: &Path) -> Vec<WorktreeInfo> {
         if let Some(head) = &wt.head {
             wt.last_commit = last_commit_times.get(head).copied();
         }
-
         if !wt.path.exists() {
             wt.reason = "missing".into();
-            continue;
-        }
-
-        let status = run_command(
-            vec!["git".into(), "status".into(), "--porcelain".into()],
-            Some(&wt.path),
-            false,
-            false,
-        );
-        if status.status != 0 {
-            wt.reason = "error".into();
-            continue;
-        }
-        wt.is_clean = status.status == 0 && status.stdout.trim().is_empty();
-        wt.has_untracked = status.stdout.contains("??");
-
-        let diff = run_command(
-            vec![
-                "git".into(),
-                "diff".into(),
-                "HEAD".into(),
-                "--shortstat".into(),
-            ],
-            Some(&wt.path),
-            false,
-            false,
-        );
-        if diff.status == 0 {
-            let out = diff.stdout.trim();
-            wt.insertions = parse_shortstat_count(out, "insertion");
-            wt.deletions = parse_shortstat_count(out, "deletion");
-        } else if wt.reason.is_empty() {
-            wt.reason = "error".into();
         }
     }
+
+    if with_changes {
+        let scans = scan_worktree_changes(&worktrees, scan_worker_count());
+        for (wt, scan) in worktrees.iter_mut().zip(scans) {
+            wt.changes = scan;
+            if matches!(scan, ChangeScan::Failed) {
+                wt.reason = "error".into();
+            }
+        }
+    }
+
     worktrees
 }
 
@@ -2843,18 +2982,18 @@ fn resolve_clean_targets(
                     }
                 }
             }
-            if wt.is_clean {
+            if wt.changes.is_clean() {
                 reason = Some("merged".to_string());
             }
         }
         if reason.is_none()
             && clean_closed
             && closed_pr_branches.contains(&wt.branch)
-            && wt.is_clean
+            && wt.changes.is_clean()
         {
             reason = Some("closed".to_string());
         }
-        if reason.is_none() && wt.is_clean {
+        if reason.is_none() && wt.changes.is_clean() {
             if let Some(days) = days {
                 if let Some(created) = wt.created {
                     if now.signed_duration_since(created).num_days() >= days {
@@ -2960,6 +3099,9 @@ fn cmd_list(args: &[String]) {
     }
     let quiet = args.iter().any(|a| a == "--quiet" || a == "-q");
     let show_pr = args.iter().any(|a| a == "--pr");
+    let show_changes = args.iter().any(|a| a == "--changes" || a == "-c")
+        || (!args.iter().any(|a| a == "--no-changes")
+            && config_list_changes(&load_config(&base_dir)));
     let mut sort_key = "created".to_string();
     if let Some(i) = args.iter().position(|a| a == "--sort") {
         if i + 1 >= args.len() {
@@ -3014,8 +3156,11 @@ fn cmd_list(args: &[String]) {
         return;
     }
 
-    let mut worktrees = get_worktree_info(&base_dir);
-    if clean_all || clean_merged || clean_closed || days.is_some() {
+    // The clean filters decide on `is_clean`, so they force the scan on even
+    // when the Changes column itself stays hidden.
+    let filtering = clean_all || clean_merged || clean_closed || days.is_some();
+    let mut worktrees = get_worktree_info(&base_dir, show_changes || filtering);
+    if filtering {
         worktrees = resolve_clean_targets(&base_dir, &worktrees, args);
     }
     sort_worktrees(&base_dir, &mut worktrees, &sort_key, descending);
@@ -3058,17 +3203,21 @@ fn cmd_list(args: &[String]) {
             parts.push(format!("{red}{}{reset}", wt.reason));
             clean_parts.push(wt.reason.clone());
         }
-        if wt.insertions > 0 {
-            parts.push(format!("{green}+{}{reset}", wt.insertions));
-            clean_parts.push(format!("+{}", wt.insertions));
-        }
-        if wt.deletions > 0 {
-            parts.push(format!("{red}-{}{reset}", wt.deletions));
-            clean_parts.push(format!("-{}", wt.deletions));
-        }
-        if wt.has_untracked {
-            parts.push(format!("{gray}??{reset}"));
-            clean_parts.push("??".into());
+        // A clean filter scans working trees even without `--changes`, so gate
+        // on the flag rather than on whether a scan happens to have run.
+        if let Some(stat) = wt.changes.stat().filter(|_| show_changes) {
+            if stat.insertions > 0 {
+                parts.push(format!("{green}+{}{reset}", stat.insertions));
+                clean_parts.push(format!("+{}", stat.insertions));
+            }
+            if stat.deletions > 0 {
+                parts.push(format!("{red}-{}{reset}", stat.deletions));
+                clean_parts.push(format!("-{}", stat.deletions));
+            }
+            if stat.has_untracked {
+                parts.push(format!("{gray}??{reset}"));
+                clean_parts.push("??".into());
+            }
         }
         if parts.is_empty() {
             changes_display.insert(idx, "-".to_string());
@@ -3115,12 +3264,19 @@ fn cmd_list(args: &[String]) {
         .unwrap_or(0)
         .max(m0("last_commit").chars().count())
         + 2;
+    // Without a scan the column can only ever carry `missing`, so labelling it
+    // "Changes" would read as "no changes" when it really means "not checked".
+    let status_label = if show_changes {
+        m0("changes_label")
+    } else {
+        m0("status_label")
+    };
     let status_w = changes_len
         .values()
         .copied()
         .max()
         .unwrap_or(0)
-        .max(m0("changes_label").chars().count())
+        .max(status_label.chars().count())
         + 2;
     let base_header = format!(
         "{:<name_w$} {:<branch_w$} {:<created_w$} {:<last_w$} {:<status_w$}",
@@ -3128,7 +3284,7 @@ fn cmd_list(args: &[String]) {
         m0("branch_name"),
         m0("created_at"),
         m0("last_commit"),
-        m0("changes_label")
+        status_label
     );
     if show_pr {
         println!("{bold}{base_header}   PR{reset}");
@@ -3833,7 +3989,7 @@ fn cmd_clean(args: &[String]) {
     let (clean_all, _, _, _) = parse_clean_filter_options(args);
     let force_yes = args.iter().any(|a| a == "--yes" || a == "-y");
     let skip_hook = args.iter().any(|a| a == "--skip-hook" || a == "--no-hook");
-    let worktrees = get_worktree_info(&base_dir);
+    let worktrees = get_worktree_info(&base_dir, true);
     let targets = resolve_clean_targets(&base_dir, &worktrees, args);
     if targets.is_empty() {
         eprintln!("{}", m0("no_clean_targets"));
@@ -3946,7 +4102,7 @@ fn bash_completion_script() -> &'static str {
             COMPREPLY=( $(compgen -W "post-add pre-rm --hook-arg ${wt_names}" -- "${cur}") )
             ;;
         list|li|ls)
-            COMPREPLY=( $(compgen -W "--pr --quiet -q --days --merged --closed --all --sort --asc --desc created last-commit name branch" -- "${cur}") )
+            COMPREPLY=( $(compgen -W "--changes -c --no-changes --pr --quiet -q --days --merged --closed --all --sort --asc --desc created last-commit name branch" -- "${cur}") )
             ;;
         stash|st)
             COMPREPLY=( $(compgen -W "${wt_names}" -- "${cur}") )
@@ -4004,7 +4160,7 @@ fn show_help() {
         );
         println!(
             "  {:<55} - worktree 一覧を表示",
-            "list (li, ls) [--pr] [--quiet|-q] [--days N] [--merged] [--closed] [--all] [--sort ...] [--asc|--desc]"
+            "list (li, ls) [--changes|-c] [--pr] [--quiet|-q] [--days N] [--merged] [--closed] [--all] [--sort ...] [--asc|--desc]"
         );
         println!(
             "  {:<55} - 変更を表示 (git diff)",
@@ -4076,7 +4232,7 @@ fn show_help() {
         );
         println!(
             "  {:<55} - List worktrees",
-            "list (li, ls) [--pr] [--quiet|-q] [--days N] [--merged] [--closed] [--all] [--sort ...] [--asc|--desc]"
+            "list (li, ls) [--changes|-c] [--pr] [--quiet|-q] [--days N] [--merged] [--closed] [--all] [--sort ...] [--asc|--desc]"
         );
         println!(
             "  {:<55} - Show changes (git diff)",

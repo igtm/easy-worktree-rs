@@ -6,7 +6,7 @@
 
 ![easy-worktree-rs hero](./hero.png)
 
-`easy-worktree-rs` は Git worktree を管理する `wt` コマンドを提供します。Python 版と同じコマンド体系を目指しており、現在のバージョンは `0.2.26` です。
+`easy-worktree-rs` は Git worktree を管理する `wt` コマンドを提供します。Python 版と同じコマンド体系を目指しており、現在のバージョンは `0.2.27` です。
 
 ## インストール
 
@@ -25,7 +25,7 @@ curl -fsSL https://raw.githubusercontent.com/igtm/easy-worktree-rs/main/install.
 バージョンを指定する場合:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/igtm/easy-worktree-rs/main/install.sh | sh -s -- -v=v0.2.26
+curl -fsSL https://raw.githubusercontent.com/igtm/easy-worktree-rs/main/install.sh | sh -s -- -v=v0.2.27
 ```
 
 Cargo で GitHub からインストールする場合:
@@ -48,7 +48,7 @@ cargo install --path . --locked
 wt clone (cn) [--bare] <repository_url> [dest_dir]
 wt init (in)
 wt add (ad) [<work_name> [<base_branch>]] [--skip-setup|--no-setup] [--skip-hook|--no-hook] [--hook-arg <value>]... [--select [<command>...]]
-wt list (li, ls) [--pr] [--quiet|-q] [--days N] [--merged] [--closed] [--all]
+wt list (li, ls) [--changes|-c] [--pr] [--quiet|-q] [--days N] [--merged] [--closed] [--all]
 wt diff (di, df) [<name>] [args...]
 wt config (cf) [--global|--local] [<key> [<value>]]
 wt rm/remove [<work_name>] [-f|--force] [--skip-hook|--no-hook]
@@ -124,6 +124,24 @@ wt list
 wt list --quiet
 wt list --pr
 ```
+
+`wt list` は既定では作業ツリーを調べません。worktree がいくつあっても速度は変わりません。
+`+N -N ??` の列が必要なときは `--changes` (`-c`) を付けます。この列は worktree 1 個につき
+`git` を 2 回実行します。
+
+```bash
+wt list --changes
+```
+
+この実行は並列化されています。同時実行数は `WT_SCAN_WORKERS` で変更できます
+（既定はコア数、上限 8）。常に列を表示したい場合は `.wt/config.toml` に次を書きます。
+
+```toml
+[list]
+changes = true
+```
+
+この設定をした上で 1 回だけ列を省きたいときは `wt list --no-changes` を使います。
 
 worktree を削除します。
 

@@ -58,6 +58,47 @@ fn run_wt(args: &[&str], cwd: &Path, xdg: &Path) -> Output {
     output
 }
 
+fn run_wt_with_env(args: &[&str], cwd: &Path, xdg: &Path, envs: &[(&str, &str)]) -> Output {
+    let mut command = Command::new(wt_bin());
+    command
+        .args(args)
+        .current_dir(cwd)
+        .env("LANG", "en")
+        .env("LC_ALL", "C")
+        .env("XDG_CONFIG_HOME", xdg);
+    for (key, value) in envs {
+        command.env(key, value);
+    }
+    let output = command.output().unwrap();
+    assert!(
+        output.status.success(),
+        "wt {args:?} failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    output
+}
+
+/// `wt list` colours its columns, so drop the escape sequences before matching
+/// on the text of a row.
+fn strip_ansi(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars();
+    while let Some(ch) = chars.next() {
+        if ch != '\x1b' {
+            out.push(ch);
+            continue;
+        }
+        // CSI sequences end at an alphabetic byte; OSC-8 hyperlinks end at \x1b\\.
+        for next in chars.by_ref() {
+            if next.is_ascii_alphabetic() || next == '\\' {
+                break;
+            }
+        }
+    }
+    out
+}
+
 fn run_wt_with_path(args: &[&str], cwd: &Path, xdg: &Path, path: &Path) -> Output {
     let output = Command::new(wt_bin())
         .args(args)
@@ -435,6 +476,120 @@ fn list_marks_missing_worktrees_without_failing() {
     assert!(stdout.contains("keep-me"));
     assert!(stdout.contains("gone-away"));
     assert!(stdout.contains("missing"));
+}
+
+#[test]
+fn list_omits_change_scan_unless_asked() {
+    let root = temp_dir("list-changes-flag");
+    let repo = root.join("repo");
+    let xdg = root.join("xdg");
+    init_repo(&repo);
+    run_wt(&["init"], &repo, &xdg);
+    run_wt(&["add", "dirty-one"], &repo, &xdg);
+
+    let wt_path = repo.join(".worktrees/dirty-one");
+    fs::write(wt_path.join("README.md"), "changed line\nsecond line\n").unwrap();
+    fs::write(wt_path.join("untracked.txt"), "new file\n").unwrap();
+
+    let plain = String::from_utf8_lossy(&run_wt(&["list"], &repo, &xdg).stdout).into_owned();
+    assert!(plain.contains("dirty-one"));
+    assert!(plain.contains("Status"));
+    assert!(!plain.contains("Changes"));
+    assert!(!plain.contains("??"));
+    assert!(!plain.contains('+'));
+
+    for flag in ["--changes", "-c"] {
+        let scanned =
+            String::from_utf8_lossy(&run_wt(&["list", flag], &repo, &xdg).stdout).into_owned();
+        assert!(scanned.contains("Changes"), "{flag}: {scanned}");
+        assert!(scanned.contains("??"), "{flag}: {scanned}");
+        assert!(scanned.contains('+'), "{flag}: {scanned}");
+    }
+}
+
+/// The parallel scan hands each worker an arbitrary slice of the worktrees and
+/// reassembles the results by index, so give every worktree a different number
+/// of changed lines and check each row keeps its own count.
+#[test]
+fn list_changes_keeps_counts_with_the_right_worktree() {
+    let root = temp_dir("list-changes-parallel");
+    let repo = root.join("repo");
+    let xdg = root.join("xdg");
+    init_repo(&repo);
+    run_wt(&["init"], &repo, &xdg);
+
+    // One missing worktree in the middle: it is skipped by the scan, so it also
+    // proves the skipped slots do not shift the surviving results.
+    let expected: [(&str, usize); 4] = [("one", 1), ("two", 2), ("three", 3), ("four", 4)];
+    for (name, lines) in expected {
+        run_wt(&["add", name], &repo, &xdg);
+        let body = (0..lines)
+            .map(|n| format!("line {n}\n"))
+            .collect::<String>();
+        fs::write(repo.join(".worktrees").join(name).join("README.md"), body).unwrap();
+    }
+    run_wt(&["add", "gone"], &repo, &xdg);
+    fs::remove_dir_all(repo.join(".worktrees/gone")).unwrap();
+
+    for workers in ["1", "4"] {
+        let output = run_wt_with_env(
+            &["list", "--changes"],
+            &repo,
+            &xdg,
+            &[("WT_SCAN_WORKERS", workers)],
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+        let plain = strip_ansi(&stdout);
+        for (name, lines) in expected {
+            let row = plain
+                .lines()
+                .find(|line| line.split_whitespace().next() == Some(name))
+                .unwrap_or_else(|| panic!("workers={workers}: no row for {name} in\n{plain}"));
+            assert!(
+                row.contains(&format!("+{lines}")),
+                "workers={workers}: {name} should report +{lines}, got: {row}"
+            );
+        }
+        assert!(
+            plain
+                .lines()
+                .any(|line| line.starts_with("gone") && line.contains("missing")),
+            "workers={workers}: missing worktree row lost:\n{plain}"
+        );
+    }
+}
+
+#[test]
+fn list_changes_can_be_turned_on_by_config() {
+    let root = temp_dir("list-changes-config");
+    let repo = root.join("repo");
+    let xdg = root.join("xdg");
+    init_repo(&repo);
+    run_wt(&["init"], &repo, &xdg);
+    run_wt(&["add", "dirty-two"], &repo, &xdg);
+
+    fs::write(
+        repo.join(".worktrees/dirty-two/untracked.txt"),
+        "new file\n",
+    )
+    .unwrap();
+
+    let config_path = repo.join(".wt/config.toml");
+    let existing = fs::read_to_string(&config_path).unwrap_or_default();
+    fs::write(
+        &config_path,
+        format!("{existing}\n[list]\nchanges = true\n"),
+    )
+    .unwrap();
+
+    let on = String::from_utf8_lossy(&run_wt(&["list"], &repo, &xdg).stdout).into_owned();
+    assert!(on.contains("Changes"), "{on}");
+    assert!(on.contains("??"), "{on}");
+
+    let off = String::from_utf8_lossy(&run_wt(&["list", "--no-changes"], &repo, &xdg).stdout)
+        .into_owned();
+    assert!(off.contains("Status"), "{off}");
+    assert!(!off.contains("??"), "{off}");
 }
 
 #[test]
