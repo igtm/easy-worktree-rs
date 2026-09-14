@@ -6,7 +6,7 @@ Rust port of [`easy-worktree`](https://github.com/igtm/easy-worktree).
 
 ![easy-worktree-rs hero](./hero.png)
 
-`easy-worktree-rs` provides the `wt` command for managing Git worktrees with the same command surface as the Python package. The current version is `0.2.26`.
+`easy-worktree-rs` provides the `wt` command for managing Git worktrees with the same command surface as the Python package. The current version is `0.2.27`.
 
 ## Install
 
@@ -25,7 +25,7 @@ curl -fsSL https://raw.githubusercontent.com/igtm/easy-worktree-rs/main/install.
 Install a specific release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/igtm/easy-worktree-rs/main/install.sh | sh -s -- -v=v0.2.26
+curl -fsSL https://raw.githubusercontent.com/igtm/easy-worktree-rs/main/install.sh | sh -s -- -v=v0.2.27
 ```
 
 Install from GitHub with Cargo:
@@ -48,7 +48,7 @@ The CLI binary is `wt`:
 wt clone (cn) [--bare] <repository_url> [dest_dir]
 wt init (in)
 wt add (ad) [<work_name> [<base_branch>]] [--skip-setup|--no-setup] [--skip-hook|--no-hook] [--hook-arg <value>]... [--select [<command>...]]
-wt list (li, ls) [--pr] [--quiet|-q] [--days N] [--merged] [--closed] [--all]
+wt list (li, ls) [--changes|-c] [--pr] [--quiet|-q] [--days N] [--merged] [--closed] [--all]
 wt diff (di, df) [<name>] [args...]
 wt config (cf) [--global|--local] [<key> [<value>]]
 wt rm/remove [<work_name>] [-f|--force] [--skip-hook|--no-hook]
@@ -125,6 +125,25 @@ wt list
 wt list --quiet
 wt list --pr
 ```
+
+By default `wt list` does not inspect working trees, so it stays fast no matter
+how many worktrees you have. Pass `--changes` (`-c`) to add the `+N -N ??`
+column, which costs two `git` calls per worktree:
+
+```bash
+wt list --changes
+```
+
+Those calls run in parallel; set `WT_SCAN_WORKERS` to change how many at once
+(default: number of cores, capped at 8). To always show the column, put this in
+`.wt/config.toml`:
+
+```toml
+[list]
+changes = true
+```
+
+Then `wt list --no-changes` skips it for a single run.
 
 Remove a worktree:
 
